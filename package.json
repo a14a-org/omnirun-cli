@@ -1,0 +1,40 @@
+{
+  "name": "@omnirun/cli",
+  "version": "0.1.0",
+  "description": "CLI for managing OmniRun sandboxes",
+  "type": "module",
+  "bin": {
+    "omni": "./dist/cli.js",
+    "omnirun": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev": "node --enable-source-maps src/cli.ts",
+    "pack:smoke": "npm pack --dry-run",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@omnirun/sdk": "file:../omnirun-sdk",
+    "commander": "^14.0.1"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.7",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  }
+}
