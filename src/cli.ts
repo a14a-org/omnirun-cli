@@ -225,9 +225,9 @@ program
 const auth = program.command("auth").description("Manage CLI authentication settings");
 auth
   .command("init")
-  .description("Create or update an auth .env file")
+  .description("Authenticate with OmniRun via email")
   .option("--api-url <url>", `API base URL (default ${DEFAULT_API_URL})`)
-  .option("--api-key <key>", "API key")
+  .option("--api-key <key>", "API key (skip email flow)")
   .option("--env-path <path>", "Path to .env file")
   .action(async function action(options: { apiUrl?: string; apiKey?: string; envPath?: string }) {
     const merged = this.optsWithGlobals() as CLIOptions;
@@ -244,14 +244,85 @@ auth
       process.env[ENV_API_URL] ??
       DEFAULT_API_URL;
 
-    const apiKey =
-      options.apiKey ??
-      merged.apiKey ??
-      process.env[ENV_API_KEY] ??
-      (await promptValue("Enter OMNIRUN_API_KEY: "));
+    // If --api-key is provided, skip the email flow (backwards compatible)
+    if (options.apiKey ?? merged.apiKey) {
+      const apiKey = (options.apiKey ?? merged.apiKey)!;
+      await writeAuthEnv(envPath, apiUrl, apiKey);
+      console.log(`Wrote ${envPath}`);
+      console.log(`${ENV_API_URL}=${apiUrl}`);
+      console.log(`${ENV_API_KEY}=<redacted>`);
+      return;
+    }
+
+    // Email-based auth flow
+    const email = await promptValue("Enter your email: ");
+
+    console.log("Sending verification code...");
+    const requestRes = await fetch(`${apiUrl}/auth/magic-link/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+
+    if (!requestRes.ok) {
+      const body = (await requestRes.json().catch(() => ({}))) as Record<string, string>;
+      throw new Error(body.message ?? `Failed to send verification email (${requestRes.status})`);
+    }
+
+    console.log(`Verification code sent to ${email}. Check your inbox.`);
+    const code = await promptValue("Enter 6-digit code: ");
+
+    const verifyRes = await fetch(`${apiUrl}/auth/otp/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, code }),
+    });
+
+    if (!verifyRes.ok) {
+      const body = (await verifyRes.json().catch(() => ({}))) as Record<string, string>;
+      if (verifyRes.status === 401) {
+        throw new Error("Invalid or expired code. Run 'omni auth init' to try again.");
+      }
+      throw new Error(body.message ?? `Verification failed (${verifyRes.status})`);
+    }
+
+    const verifyData = (await verifyRes.json()) as {
+      token?: string;
+      mfaRequired?: boolean;
+      mfaChallengeToken?: string;
+    };
+
+    let apiKey: string;
+
+    if (verifyData.mfaRequired && verifyData.mfaChallengeToken) {
+      console.log("MFA is enabled on your account.");
+      const totpCode = await promptValue("Enter TOTP code from your authenticator: ");
+
+      const mfaRes = await fetch(`${apiUrl}/auth/mfa/totp/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mfa_challenge_token: verifyData.mfaChallengeToken,
+          code: totpCode,
+        }),
+      });
+
+      if (!mfaRes.ok) {
+        const body = (await mfaRes.json().catch(() => ({}))) as Record<string, string>;
+        if (mfaRes.status === 401) {
+          throw new Error("Invalid TOTP code. Run 'omni auth init' to try again.");
+        }
+        throw new Error(body.message ?? `MFA verification failed (${mfaRes.status})`);
+      }
+
+      const mfaData = (await mfaRes.json()) as { token: string };
+      apiKey = mfaData.token;
+    } else {
+      apiKey = verifyData.token!;
+    }
 
     await writeAuthEnv(envPath, apiUrl, apiKey);
-
+    console.log("\nAuthenticated successfully!");
     console.log(`Wrote ${envPath}`);
     console.log(`${ENV_API_URL}=${apiUrl}`);
     console.log(`${ENV_API_KEY}=<redacted>`);
