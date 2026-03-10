@@ -901,12 +901,9 @@ beamup
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
-    // Create a non-root user (Claude Code refuses --dangerously-skip-permissions as root)
+    // Use pre-baked non-root user (Claude Code refuses --dangerously-skip-permissions as root)
     const sandboxUser = "coder";
     const sandboxHome = `/home/${sandboxUser}`;
-    await instance.commands.run(
-      `useradd -m -s /bin/bash ${sandboxUser} && chown -R ${sandboxUser}:${sandboxUser} ${sandboxHome}`
-    );
 
     // Transfer auth to the non-root user's home
     if (config.transferAuth && (auth.adminJson || auth.envFile)) {
