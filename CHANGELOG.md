@@ -1,5 +1,11 @@
 # @omnirun/cli
 
+## 0.3.2
+
+### Patch Changes
+
+- 13830b0: Use pre-baked coder user instead of runtime useradd in sandbox
+
 ## 0.3.1
 
 ### Patch Changes
