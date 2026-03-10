@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
@@ -611,6 +612,326 @@ command
     }
 
     console.log(`killed pid=${pid} sandbox=${sandboxId}`);
+  });
+
+// ── beamup helpers ──────────────────────────────────────────────────
+
+async function discoverClaudeAuth(authDir: string): Promise<{
+  adminJson?: string;
+  envFile?: string;
+}> {
+  const result: { adminJson?: string; envFile?: string } = {};
+  for (const [key, rel] of [
+    ["adminJson", "auth/admin.json"],
+    ["envFile", ".env"],
+  ] as const) {
+    try {
+      result[key] = await fs.readFile(path.join(authDir, rel), "utf-8");
+    } catch {
+      // file may not exist – skip silently
+    }
+  }
+  return result;
+}
+
+async function transferClaudeAuth(
+  instance: Awaited<ReturnType<typeof Sandbox.create>>,
+  homeDir: string,
+  auth: { adminJson?: string; envFile?: string }
+): Promise<void> {
+  await instance.files.makeDir(`${homeDir}/.claude/auth`);
+  if (auth.adminJson) {
+    await instance.files.write(`${homeDir}/.claude/auth/admin.json`, auth.adminJson);
+  }
+  if (auth.envFile) {
+    await instance.files.write(`${homeDir}/.claude/.env`, auth.envFile);
+  }
+}
+
+async function promptConfirm(question: string, defaultValue: boolean): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  const hint = defaultValue ? "Y/n" : "y/N";
+  try {
+    const answer = (await rl.question(`${question} (${hint}) `)).trim().toLowerCase();
+    if (!answer) return defaultValue;
+    return answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+async function promptSelect(question: string, choices: string[]): Promise<number> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    for (let i = 0; i < choices.length; i++) {
+      process.stderr.write(`  ${i + 1}) ${choices[i]}\n`);
+    }
+    const answer = (await rl.question(`${question} [1-${choices.length}]: `)).trim();
+    const index = Number.parseInt(answer, 10) - 1;
+    if (Number.isNaN(index) || index < 0 || index >= choices.length) {
+      return 0; // default to first choice
+    }
+    return index;
+  } finally {
+    rl.close();
+  }
+}
+
+async function promptInput(question: string, defaultValue: string): Promise<string> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = (await rl.question(`${question} (${defaultValue}): `)).trim();
+    return answer || defaultValue;
+  } finally {
+    rl.close();
+  }
+}
+
+type BeamupClaudeConfig = {
+  transferAuth: boolean;
+  skipPermissions: boolean;
+  internet: boolean;
+  timeout: number;
+  e2ee: boolean;
+  authDir: string;
+  envVars: Record<string, string> | undefined;
+};
+
+async function promptBeamupClaude(options: {
+  skipPermissions?: boolean;
+  internet?: boolean;
+  timeout?: string;
+  e2ee?: boolean;
+  authDir?: string;
+  skipAuthTransfer?: boolean;
+  env?: string[];
+  yes?: boolean;
+}): Promise<BeamupClaudeConfig> {
+  const authDir = options.authDir ?? path.join(os.homedir(), ".claude");
+  const envVars = parseKeyValueList(options.env, "env");
+
+  if (options.yes || !process.stdin.isTTY) {
+    return {
+      transferAuth: !options.skipAuthTransfer,
+      skipPermissions: Boolean(options.skipPermissions),
+      internet: options.internet !== false,
+      timeout: options.timeout ? parseInteger(options.timeout, "timeout") : 3600,
+      e2ee: options.e2ee !== false,
+      authDir,
+      envVars,
+    };
+  }
+
+  // Interactive prompt flow
+  const transferAuth = options.skipAuthTransfer
+    ? false
+    : await promptConfirm("Transfer local Claude credentials to sandbox?", true);
+
+  const modeIndex = options.skipPermissions != null
+    ? (options.skipPermissions ? 1 : 0)
+    : await promptSelect("Run mode:", [
+        "Standard",
+        "Bypass restrictions (--dangerously-skip-permissions)",
+      ]);
+
+  const internet = options.internet != null
+    ? options.internet
+    : await promptConfirm("Enable full internet access?", true);
+
+  const timeoutStr = options.timeout
+    ?? await promptInput("Sandbox timeout in seconds:", "3600");
+  const timeout = parseInteger(timeoutStr, "timeout");
+
+  return {
+    transferAuth,
+    skipPermissions: modeIndex === 1,
+    internet,
+    timeout,
+    e2ee: options.e2ee !== false,
+    authDir,
+    envVars,
+  };
+}
+
+async function attachPty(
+  instance: Awaited<ReturnType<typeof Sandbox.create>>,
+  claudeCommand: string
+): Promise<void> {
+  const cols = process.stdout.columns || 80;
+  const rows = process.stdout.rows || 24;
+
+  const session = await instance.pty.create({ cols, rows });
+  await session.sendStdin(claudeCommand + "\n");
+
+  const wasRaw = process.stdin.isRaw;
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+  }
+  process.stdin.resume();
+
+  let exiting = false;
+
+  const cleanup = () => {
+    if (exiting) return;
+    exiting = true;
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(wasRaw ?? false);
+    }
+    process.stdin.pause();
+    console.log(`\nSandbox ID: ${instance.sandboxId}`);
+    console.log("Reconnect with: omni sandbox info " + instance.sandboxId);
+  };
+
+  // Forward local stdin to PTY
+  const onData = (data: Buffer) => {
+    if (exiting) return;
+    session.sendStdin(data.toString()).catch(() => {
+      cleanup();
+    });
+  };
+  process.stdin.on("data", onData);
+
+  // Handle terminal resize
+  const onResize = () => {
+    if (exiting) return;
+    const newCols = process.stdout.columns || 80;
+    const newRows = process.stdout.rows || 24;
+    session.resize(newCols, newRows).catch(() => {});
+  };
+  process.stdout.on("resize", onResize);
+
+  // Poll PTY output
+  let emptyReads = 0;
+  let hasOutput = false;
+
+  const poll = async () => {
+    while (!exiting) {
+      try {
+        const data = await session.read();
+        if (data) {
+          hasOutput = true;
+          emptyReads = 0;
+          process.stdout.write(data);
+        } else {
+          emptyReads++;
+          // After receiving output, many consecutive empty reads means session ended
+          if (hasOutput && emptyReads > 100) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      } catch {
+        // Session ended or error
+        break;
+      }
+    }
+
+    process.stdin.removeListener("data", onData);
+    process.stdout.removeListener("resize", onResize);
+    cleanup();
+  };
+
+  await poll();
+}
+
+// ── beamup command group ────────────────────────────────────────────
+
+const beamup = program
+  .command("beamup")
+  .description("Launch preconfigured sandbox environments");
+
+beamup
+  .command("claude")
+  .description("Launch Claude Code in an E2EE sandbox")
+  .option("--template <id>", "Sandbox template ID", "claude-code")
+  .option("--skip-permissions", "Run with --dangerously-skip-permissions")
+  .option("--no-internet", "Disable internet access")
+  .option("--timeout <seconds>", "Sandbox timeout in seconds")
+  .option("--no-e2ee", "Disable E2EE")
+  .option("--auth-dir <path>", "Custom Claude auth directory (default: ~/.claude)")
+  .option("--skip-auth-transfer", "Don't transfer credentials")
+  .option("--env <key=value>", "Extra environment variable", collect, [])
+  .option("-y, --yes", "Skip interactive prompts, use defaults")
+  .action(async function action(options: {
+    template: string;
+    skipPermissions?: boolean;
+    internet?: boolean;
+    timeout?: string;
+    e2ee?: boolean;
+    authDir?: string;
+    skipAuthTransfer?: boolean;
+    env?: string[];
+    yes?: boolean;
+  }) {
+    const runtime = await resolveRuntime(this, true);
+
+    const config = await promptBeamupClaude(options);
+
+    // Discover local Claude auth
+    let auth: { adminJson?: string; envFile?: string } = {};
+    if (config.transferAuth) {
+      auth = await discoverClaudeAuth(config.authDir);
+      if (!auth.adminJson) {
+        console.warn(
+          "Warning: No Claude credentials found at " +
+            path.join(config.authDir, "auth/admin.json") +
+            ". You may need to authenticate manually inside the sandbox."
+        );
+      }
+    }
+
+    // Warn if E2EE disabled but transferring auth
+    if (!config.e2ee && config.transferAuth && (auth.adminJson || auth.envFile)) {
+      console.warn(
+        "Warning: E2EE is disabled but credentials will be transferred. " +
+          "Secrets will not be encrypted in transit."
+      );
+    }
+
+    // Create sandbox
+    console.log("Creating Claude Code sandbox...");
+    const instance = await Sandbox.create(options.template, {
+      apiUrl: runtime.config.apiUrl,
+      apiKey: runtime.config.apiKey,
+      requestTimeout: runtime.config.requestTimeout,
+      e2ee: config.e2ee,
+      internet: config.internet,
+      timeout: config.timeout,
+      envVars: config.envVars,
+    });
+    console.log(`sandbox_id=${instance.sandboxId}`);
+
+    // Determine home directory
+    const homeResult = await instance.commands.run("echo $HOME");
+    const homeDir = homeResult.stdout.trim() || "/root";
+
+    // Transfer auth
+    if (config.transferAuth && (auth.adminJson || auth.envFile)) {
+      try {
+        await transferClaudeAuth(instance, homeDir, auth);
+        console.log("Claude credentials transferred to sandbox.");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`Warning: Failed to transfer credentials: ${message}`);
+        console.warn("You may need to authenticate manually inside the sandbox.");
+      }
+    }
+
+    // Build claude command
+    let claudeCommand = "claude";
+    if (config.skipPermissions) {
+      claudeCommand += " --dangerously-skip-permissions";
+    }
+
+    if (process.stdin.isTTY) {
+      console.log("Attaching to Claude Code session...\n");
+      await attachPty(instance, claudeCommand);
+    } else {
+      // Non-TTY: start claude in background
+      await instance.commands.run(claudeCommand, { background: true } as RunCommandOptions & { background: true });
+      console.log("Claude Code started in background.");
+      console.log(`Connect to sandbox: omni sandbox info ${instance.sandboxId}`);
+    }
   });
 
 program.parseAsync(process.argv).catch((err: unknown) => {
