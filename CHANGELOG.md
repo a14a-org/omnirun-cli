@@ -1,5 +1,11 @@
 # @omnirun/cli
 
+## 0.3.1
+
+### Patch Changes
+
+- 5e6988f: Run Claude Code as non-root user in sandbox to fix permission restrictions
+
 ## 0.3.0
 
 ### Minor Changes
