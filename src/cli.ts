@@ -901,14 +901,18 @@ beamup
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
-    // Determine home directory
-    const homeResult = await instance.commands.run("echo $HOME");
-    const homeDir = homeResult.stdout.trim() || "/root";
+    // Create a non-root user (Claude Code refuses --dangerously-skip-permissions as root)
+    const sandboxUser = "coder";
+    const sandboxHome = `/home/${sandboxUser}`;
+    await instance.commands.run(
+      `useradd -m -s /bin/bash ${sandboxUser} && chown -R ${sandboxUser}:${sandboxUser} ${sandboxHome}`
+    );
 
-    // Transfer auth
+    // Transfer auth to the non-root user's home
     if (config.transferAuth && (auth.adminJson || auth.envFile)) {
       try {
-        await transferClaudeAuth(instance, homeDir, auth);
+        await transferClaudeAuth(instance, sandboxHome, auth);
+        await instance.commands.run(`chown -R ${sandboxUser}:${sandboxUser} ${sandboxHome}/.claude`);
         console.log("Claude credentials transferred to sandbox.");
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -917,18 +921,19 @@ beamup
       }
     }
 
-    // Build claude command
+    // Build claude command, run as non-root user
     let claudeCommand = "claude";
     if (config.skipPermissions) {
       claudeCommand += " --dangerously-skip-permissions";
     }
+    const fullCommand = `su - ${sandboxUser} -c "${claudeCommand}"`;
 
     if (process.stdin.isTTY) {
       console.log("Attaching to Claude Code session...\n");
-      await attachPty(instance, claudeCommand);
+      await attachPty(instance, fullCommand);
     } else {
       // Non-TTY: start claude in background
-      await instance.commands.run(claudeCommand, { background: true } as RunCommandOptions & { background: true });
+      await instance.commands.run(fullCommand, { background: true } as RunCommandOptions & { background: true });
       console.log("Claude Code started in background.");
       console.log(`Connect to sandbox: omni sandbox info ${instance.sandboxId}`);
     }
