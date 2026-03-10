@@ -544,24 +544,24 @@ command
         if (result.stderr) process.stderr.write(result.stderr);
       }
       console.log(`\nexit_code=${result.exitCode}`);
-    } catch (unknown) {
-      if (unknown instanceof CommandExitException) {
+    } catch (caughtErr) {
+      if (caughtErr instanceof CommandExitException) {
         if (runtime.json) {
           printJson({
-            stdout: unknown.stdout,
-            stderr: unknown.stderr,
-            exitCode: unknown.exitCode,
+            stdout: caughtErr.stdout,
+            stderr: caughtErr.stderr,
+            exitCode: caughtErr.exitCode,
           });
         } else {
-          if (unknown.stdout) process.stdout.write(unknown.stdout);
-          if (unknown.stderr) process.stderr.write(unknown.stderr);
-          console.error(`\nexit_code=${unknown.exitCode}`);
+          if (caughtErr.stdout) process.stdout.write(caughtErr.stdout);
+          if (caughtErr.stderr) process.stderr.write(caughtErr.stderr);
+          console.error(`\nexit_code=${caughtErr.exitCode}`);
         }
-        process.exitCode = unknown.exitCode || 1;
+        process.exitCode = caughtErr.exitCode || 1;
         return;
       }
 
-      throw unknown;
+      throw caughtErr;
     }
   });
 
