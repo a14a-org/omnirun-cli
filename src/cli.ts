@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
+import { promisify } from "node:util";
 import {
   CommandExitException,
   Sandbox,
@@ -616,37 +618,40 @@ command
 
 // ── beamup helpers ──────────────────────────────────────────────────
 
-async function discoverClaudeAuth(authDir: string): Promise<{
-  adminJson?: string;
-  envFile?: string;
-}> {
-  const result: { adminJson?: string; envFile?: string } = {};
-  for (const [key, rel] of [
-    ["adminJson", "auth/admin.json"],
-    ["envFile", ".env"],
-  ] as const) {
+async function discoverClaudeCredentials(authDir: string): Promise<string | null> {
+  // Try reading full credentials JSON from macOS Keychain (where Claude Code stores tokens)
+  if (process.platform === "darwin") {
     try {
-      result[key] = await fs.readFile(path.join(authDir, rel), "utf-8");
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync("security", [
+        "find-generic-password",
+        "-s", "Claude Code-credentials",
+        "-w",
+      ]);
+      const creds = stdout.trim();
+      const parsed = JSON.parse(creds);
+      if (parsed.claudeAiOauth?.accessToken) {
+        return creds;
+      }
     } catch {
-      // file may not exist – skip silently
+      // Keychain entry may not exist
     }
   }
-  return result;
+
+  // Fall back to .credentials.json file (used on Linux)
+  try {
+    const credFile = await fs.readFile(path.join(authDir, ".credentials.json"), "utf-8");
+    const parsed = JSON.parse(credFile);
+    if (parsed.claudeAiOauth?.accessToken) {
+      return credFile;
+    }
+  } catch {
+    // file may not exist
+  }
+
+  return null;
 }
 
-async function transferClaudeAuth(
-  instance: Awaited<ReturnType<typeof Sandbox.create>>,
-  homeDir: string,
-  auth: { adminJson?: string; envFile?: string }
-): Promise<void> {
-  await instance.files.makeDir(`${homeDir}/.claude/auth`);
-  if (auth.adminJson) {
-    await instance.files.write(`${homeDir}/.claude/auth/admin.json`, auth.adminJson);
-  }
-  if (auth.envFile) {
-    await instance.files.write(`${homeDir}/.claude/.env`, auth.envFile);
-  }
-}
 
 async function promptConfirm(question: string, defaultValue: boolean): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
@@ -867,21 +872,23 @@ beamup
 
     const config = await promptBeamupClaude(options);
 
-    // Discover local Claude auth
-    let auth: { adminJson?: string; envFile?: string } = {};
+    // Discover local Claude credentials (full JSON from Keychain or .credentials.json)
+    let credentials: string | null = null;
     if (config.transferAuth) {
-      auth = await discoverClaudeAuth(config.authDir);
-      if (!auth.adminJson) {
+      credentials = await discoverClaudeCredentials(config.authDir);
+      if (credentials) {
+        console.log(`Found Claude credentials (${credentials.length} bytes).`);
+      } else {
         console.warn(
-          "Warning: No Claude credentials found at " +
-            path.join(config.authDir, "auth/admin.json") +
-            ". You may need to authenticate manually inside the sandbox."
+          "Warning: No Claude credentials found (checked macOS Keychain and " +
+            path.join(config.authDir, ".credentials.json") +
+            "). You may need to authenticate manually inside the sandbox."
         );
       }
     }
 
     // Warn if E2EE disabled but transferring auth
-    if (!config.e2ee && config.transferAuth && (auth.adminJson || auth.envFile)) {
+    if (!config.e2ee && config.transferAuth && credentials) {
       console.warn(
         "Warning: E2EE is disabled but credentials will be transferred. " +
           "Secrets will not be encrypted in transit."
@@ -905,17 +912,31 @@ beamup
     const sandboxUser = "coder";
     const sandboxHome = `/home/${sandboxUser}`;
 
-    // Transfer auth to the non-root user's home
-    if (config.transferAuth && (auth.adminJson || auth.envFile)) {
-      try {
-        await transferClaudeAuth(instance, sandboxHome, auth);
-        await instance.commands.run(`chown -R ${sandboxUser}:${sandboxUser} ${sandboxHome}/.claude`);
-        console.log("Claude credentials transferred to sandbox.");
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`Warning: Failed to transfer credentials: ${message}`);
-        console.warn("You may need to authenticate manually inside the sandbox.");
+    // Use a fresh config dir to avoid corrupted .claude from snapshot.
+    // Claude Code reads CLAUDE_CONFIG_DIR to find its config/credentials.
+    const configDir = `/tmp/claude-config`;
+
+    try {
+      await instance.commands.run(`mkdir -p ${configDir}`);
+      if (credentials) {
+        const b64 = Buffer.from(credentials).toString("base64");
+        await instance.commands.run(
+          `echo '${b64}' | base64 -d > ${configDir}/.credentials.json`
+        );
       }
+      // Mark onboarding as complete so Claude Code skips the theme/welcome flow
+      await instance.commands.run(
+        `echo '{"hasCompletedOnboarding":true}' > ${configDir}/.claude.json`
+      );
+      await instance.commands.run(`chmod -R 700 ${configDir}`);
+      await instance.commands.run(`chown -R ${sandboxUser}:${sandboxUser} ${configDir}`);
+      if (credentials) {
+        const verify = await instance.commands.run(`cat ${configDir}/.credentials.json | head -c 60`);
+        console.log(`  credentials written: ${verify.stdout.trim().slice(0, 50)}...`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`Warning: Failed to set up config: ${message}`);
     }
 
     // Build claude command, run as non-root user
@@ -923,7 +944,8 @@ beamup
     if (config.skipPermissions) {
       claudeCommand += " --dangerously-skip-permissions";
     }
-    const fullCommand = `su - ${sandboxUser} -c "${claudeCommand}"`;
+    const envSetup = `export CLAUDE_CONFIG_DIR=${configDir}`;
+    const fullCommand = `su - ${sandboxUser} -c '${envSetup}; ${claudeCommand}'`;
 
     if (process.stdin.isTTY) {
       console.log("Attaching to Claude Code session...\n");
