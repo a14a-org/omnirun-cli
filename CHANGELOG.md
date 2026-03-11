@@ -1,5 +1,11 @@
 # @omnirun/cli
 
+## 0.3.3
+
+### Patch Changes
+
+- bfee67a: Fix credential transfer: read OAuth tokens from macOS Keychain, use CLAUDE_CONFIG_DIR for sandbox auth
+
 ## 0.3.2
 
 ### Patch Changes
