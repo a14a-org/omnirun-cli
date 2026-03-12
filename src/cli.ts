@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -35,6 +35,48 @@ type CLIOptions = {
   requestTimeout?: number;
   envPath?: string;
   json?: boolean;
+};
+
+type PreviewVisibility = "public" | "private";
+
+type PreviewStatus =
+  | "pending"
+  | "ready"
+  | "revoked"
+  | "expired"
+  | "sandbox_stopped"
+  | "error";
+
+type PreviewExposure = {
+  id: string;
+  sandboxId: string;
+  port: number;
+  hostname: string;
+  url: string;
+  accessUrl?: string;
+  visibility: PreviewVisibility;
+  status: PreviewStatus;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt?: string;
+  sandboxStoppedAt?: string;
+  lastAccessedAt?: string;
+  openPath?: string;
+  preserveHost: boolean;
+};
+
+type ExposureApi = {
+  create: (port: number, options?: {
+    visibility?: PreviewVisibility;
+    ttlSeconds?: number;
+    slug?: string;
+    openPath?: string;
+    preserveHost?: boolean;
+  }) => Promise<PreviewExposure>;
+  list: () => Promise<PreviewExposure[]>;
+  get: (exposureId: string) => Promise<PreviewExposure>;
+  refresh: (exposureId: string, options?: { ttlSeconds?: number }) => Promise<PreviewExposure>;
+  close: (exposureId: string) => Promise<void>;
 };
 
 function collect(value: string, previous: string[]): string[] {
@@ -177,6 +219,182 @@ function printSandboxTable(
         `startedAt=${String(row.startedAt ?? "")}`,
       ].join(" ")
     );
+  }
+}
+
+function parsePorts(values: string[] | undefined, field: string): number[] {
+  if (!values || values.length === 0) return [];
+  return values.map((value) => {
+    const port = parseInteger(value, field);
+    if (port < 1 || port > 65535) {
+      throw new Error(`Invalid ${field}: ${value}`);
+    }
+    return port;
+  });
+}
+
+function printExposureTable(exposures: PreviewExposure[]): void {
+  if (exposures.length === 0) {
+    console.log("No preview URLs found.");
+    return;
+  }
+
+  for (const exposure of exposures) {
+    console.log(
+      [
+        `id=${exposure.id}`,
+        `port=${exposure.port}`,
+        `status=${exposure.status}`,
+        `visibility=${exposure.visibility}`,
+        `url=${exposure.accessUrl ?? exposure.url}`,
+        `expiresAt=${exposure.expiresAt}`,
+      ].join(" ")
+    );
+  }
+}
+
+function getExposureApi(instance: unknown): ExposureApi {
+  const api = (instance as { exposures?: ExposureApi }).exposures;
+  if (!api) {
+    throw new Error(
+      "Installed SDK does not support preview URLs yet. Update @omnirun/sdk and try again."
+    );
+  }
+  return api;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForExposureReady(
+  api: ExposureApi,
+  exposure: PreviewExposure,
+  waitTimeoutSeconds: number,
+): Promise<PreviewExposure> {
+  const timeoutMs = Math.max(waitTimeoutSeconds, 1) * 1000;
+  const deadline = Date.now() + timeoutMs;
+  let current = exposure;
+
+  while (Date.now() < deadline) {
+    if (current.status !== "pending") {
+      return current;
+    }
+    await sleep(1000);
+    current = await api.get(exposure.id);
+  }
+
+  return current;
+}
+
+async function pipeToCommand(command: string, args: string[], input: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const child = spawn(command, args, { stdio: ["pipe", "ignore", "ignore"] });
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+    child.stdin.end(input);
+  });
+}
+
+async function copyToClipboard(value: string): Promise<boolean> {
+  if (!value) return false;
+  if (process.platform === "darwin") {
+    return pipeToCommand("pbcopy", [], value);
+  }
+  if (process.platform === "win32") {
+    return pipeToCommand("clip", [], value);
+  }
+  if (await pipeToCommand("wl-copy", [], value)) return true;
+  if (await pipeToCommand("xclip", ["-selection", "clipboard"], value)) return true;
+  return pipeToCommand("xsel", ["--clipboard", "--input"], value);
+}
+
+async function openInBrowser(targetUrl: string): Promise<boolean> {
+  if (!targetUrl) return false;
+
+  const launch = (command: string, args: string[]): Promise<boolean> =>
+    new Promise((resolve) => {
+      const child = spawn(command, args, {
+        stdio: "ignore",
+        detached: true,
+      });
+      child.on("error", () => resolve(false));
+      child.on("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    });
+
+  if (process.platform === "darwin") {
+    return launch("open", [targetUrl]);
+  }
+  if (process.platform === "win32") {
+    return launch("cmd", ["/c", "start", "", targetUrl]);
+  }
+  return launch("xdg-open", [targetUrl]);
+}
+
+type PreviewCreateRequest = {
+  ports: number[];
+  ttlSeconds?: number;
+  slug?: string;
+  openPath?: string;
+  preserveHost?: boolean;
+  visibility: PreviewVisibility;
+  wait: boolean;
+  waitTimeoutSeconds: number;
+  copy?: boolean;
+  open?: boolean;
+};
+
+async function createPreviewUrls(
+  instance: unknown,
+  request: PreviewCreateRequest,
+): Promise<PreviewExposure[]> {
+  const api = getExposureApi(instance);
+  const exposures: PreviewExposure[] = [];
+
+  for (const port of request.ports) {
+    let exposure = await api.create(port, {
+      visibility: request.visibility,
+      ttlSeconds: request.ttlSeconds,
+      slug: request.slug,
+      openPath: request.openPath,
+      preserveHost: request.preserveHost,
+    });
+    if (request.wait) {
+      exposure = await waitForExposureReady(api, exposure, request.waitTimeoutSeconds);
+    }
+    exposures.push(exposure);
+  }
+
+  if (request.copy && exposures.length > 0) {
+    const copied = await copyToClipboard(exposures[0].accessUrl ?? exposures[0].url);
+    if (!copied) {
+      console.warn("Warning: Failed to copy preview URL to clipboard.");
+    }
+  }
+  if (request.open && exposures.length > 0) {
+    const opened = await openInBrowser(exposures[0].accessUrl ?? exposures[0].url);
+    if (!opened) {
+      console.warn("Warning: Failed to open preview URL in your browser.");
+    }
+  }
+
+  return exposures;
+}
+
+function printCreatedExposures(exposures: PreviewExposure[]): void {
+  for (const exposure of exposures) {
+    console.log(`preview_id=${exposure.id}`);
+    console.log(`preview_port=${exposure.port}`);
+    console.log(`preview_status=${exposure.status}`);
+    console.log(`preview_visibility=${exposure.visibility}`);
+    console.log(`preview_url=${exposure.accessUrl ?? exposure.url}`);
+    console.log(`preview_expires_at=${exposure.expiresAt}`);
+    if (exposure.status === "pending") {
+      console.log("preview_note=Still pending. Make sure your app is listening on 0.0.0.0.");
+    }
   }
 }
 
@@ -481,6 +699,124 @@ sandbox
     }
 
     console.log(`killed=${sandboxId}`);
+  });
+
+sandbox
+  .command("expose")
+  .description("Create a temporary preview URL for a sandbox port")
+  .argument("<sandboxId>", "Sandbox ID")
+  .argument("<port>", "Port to expose", (value: string) => parseInteger(value, "port"))
+  .option("--ttl <seconds>", "Preview URL lifetime in seconds", (value: string) =>
+    parseInteger(value, "ttl")
+  )
+  .option("--slug <slug>", "Custom preview slug")
+  .option("--path <path>", "Open path to append to the preview URL")
+  .option("--rewrite-host", "Rewrite Host to the canonical sandbox host instead of preserving preview host")
+  .option("--private", "Require a signed preview access URL")
+  .option("--no-wait", "Return immediately instead of waiting for readiness")
+  .option("--wait-timeout <seconds>", "Max time to wait for readiness", (value: string) =>
+    parseInteger(value, "wait-timeout")
+  , 30)
+  .option("--open", "Open the preview URL in your browser")
+  .option("--copy", "Copy the preview URL to your clipboard")
+  .action(async function action(
+    sandboxId: string,
+    port: number,
+    options: {
+      ttl?: number;
+      slug?: string;
+      path?: string;
+      rewriteHost?: boolean;
+      private?: boolean;
+      wait?: boolean;
+      waitTimeout?: number;
+      open?: boolean;
+      copy?: boolean;
+    },
+  ) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    const [exposure] = await createPreviewUrls(instance, {
+      ports: [port],
+      ttlSeconds: options.ttl,
+      slug: options.slug,
+      openPath: options.path,
+      preserveHost: !options.rewriteHost,
+      visibility: options.private ? "private" : "public",
+      wait: options.wait !== false,
+      waitTimeoutSeconds: options.waitTimeout ?? 30,
+      open: Boolean(options.open),
+      copy: Boolean(options.copy),
+    });
+
+    if (runtime.json) {
+      printJson(exposure);
+      return;
+    }
+
+    printCreatedExposures([exposure]);
+  });
+
+sandbox
+  .command("exposures")
+  .description("List preview URLs for a sandbox")
+  .argument("<sandboxId>", "Sandbox ID")
+  .action(async function action(sandboxId: string) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    const exposures = await getExposureApi(instance).list();
+
+    if (runtime.json) {
+      printJson(exposures);
+      return;
+    }
+
+    printExposureTable(exposures);
+  });
+
+const closeExposure = sandbox
+  .command("close")
+  .description("Close a preview URL")
+  .argument("<sandboxId>", "Sandbox ID")
+  .argument("<exposureId>", "Preview exposure ID")
+  .action(async function action(sandboxId: string, exposureId: string) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    await getExposureApi(instance).close(exposureId);
+
+    if (runtime.json) {
+      printJson({ sandboxId, exposureId, closed: true });
+      return;
+    }
+
+    console.log(`closed_preview=${exposureId}`);
+  });
+
+sandbox
+  .command("refresh-exposure")
+  .description("Refresh the expiry of a preview URL")
+  .argument("<sandboxId>", "Sandbox ID")
+  .argument("<exposureId>", "Preview exposure ID")
+  .option("--ttl <seconds>", "New preview lifetime in seconds", (value: string) =>
+    parseInteger(value, "ttl")
+  )
+  .action(async function action(
+    sandboxId: string,
+    exposureId: string,
+    options: { ttl?: number },
+  ) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    const exposure = await getExposureApi(instance).refresh(exposureId, {
+      ttlSeconds: options.ttl,
+    });
+
+    if (runtime.json) {
+      printJson(exposure);
+      return;
+    }
+
+    printCreatedExposures([exposure]);
   });
 
 const command = program.command("command").description("Run and manage sandbox commands");
@@ -1035,12 +1371,54 @@ async function attachPty(
   await poll();
 }
 
+type BeamupPreviewFlags = {
+  expose?: string[];
+  previewTtl?: string;
+  previewPath?: string;
+  privatePreview?: boolean;
+  rewritePreviewHost?: boolean;
+};
+
+function addPreviewOptions(cmd: Command): Command {
+  return cmd
+    .option("--expose <port>", "Create a preview URL for a sandbox port", collect, [])
+    .option("--preview-ttl <seconds>", "Preview URL lifetime in seconds")
+    .option("--preview-path <path>", "Path to append to preview URLs")
+    .option("--private-preview", "Require access-token URLs for previews")
+    .option("--rewrite-preview-host", "Rewrite Host to the canonical sandbox host for previews");
+}
+
+async function maybeCreateBeamupPreviews(
+  instance: unknown,
+  options: BeamupPreviewFlags,
+): Promise<PreviewExposure[]> {
+  const ports = parsePorts(options.expose, "expose");
+  if (ports.length === 0) {
+    return [];
+  }
+
+  const exposures = await createPreviewUrls(instance, {
+    ports,
+    ttlSeconds: options.previewTtl ? parseInteger(options.previewTtl, "preview-ttl") : undefined,
+    openPath: options.previewPath,
+    preserveHost: !options.rewritePreviewHost,
+    visibility: options.privatePreview ? "private" : "public",
+    wait: false,
+    waitTimeoutSeconds: 1,
+  });
+
+  printCreatedExposures(exposures);
+  console.log("Use `omni sandbox exposures " + (instance as { sandboxId: string }).sandboxId + "` to check readiness.");
+  return exposures;
+}
+
 // ── beamup command group ────────────────────────────────────────────
 
 const beamup = program
   .command("beamup")
   .description("Launch preconfigured sandbox environments");
 
+addPreviewOptions(
 beamup
   .command("claude")
   .description("Launch Claude Code in an E2EE sandbox")
@@ -1054,7 +1432,7 @@ beamup
   .option("--skip-auth-transfer", "Don't transfer credentials")
   .option("--env <key=value>", "Extra environment variable", collect, [])
   .option("-y, --yes", "Skip interactive prompts, use defaults")
-  .action(async function action(options: {
+).action(async function action(options: {
     template: string;
     skipPermissions?: boolean;
     internet?: boolean;
@@ -1064,6 +1442,11 @@ beamup
     authDir?: string;
     skipAuthTransfer?: boolean;
     env?: string[];
+    expose?: string[];
+    previewTtl?: string;
+    previewPath?: string;
+    privatePreview?: boolean;
+    rewritePreviewHost?: boolean;
     yes?: boolean;
   }) {
     const runtime = await resolveRuntime(this, true);
@@ -1137,6 +1520,8 @@ beamup
       console.warn(`Warning: Failed to set up config: ${message}`);
     }
 
+    await maybeCreateBeamupPreviews(instance, options);
+
     // Build claude command, run as non-root user
     let claudeCommand = "claude";
     if (config.skipPermissions) {
@@ -1158,6 +1543,7 @@ beamup
 
 // ── beamup codex ────────────────────────────────────────────────────
 
+addPreviewOptions(
 beamup
   .command("codex")
   .description("Launch OpenAI Codex CLI in an E2EE sandbox")
@@ -1169,7 +1555,7 @@ beamup
   .option("--skip-auth-transfer", "Don't transfer credentials")
   .option("--env <key=value>", "Extra environment variable", collect, [])
   .option("-y, --yes", "Skip interactive prompts, use defaults")
-  .action(async function action(options: {
+).action(async function action(options: {
     template: string;
     internet?: boolean;
     timeout?: string;
@@ -1177,6 +1563,11 @@ beamup
     e2ee?: boolean;
     skipAuthTransfer?: boolean;
     env?: string[];
+    expose?: string[];
+    previewTtl?: string;
+    previewPath?: string;
+    privatePreview?: boolean;
+    rewritePreviewHost?: boolean;
     yes?: boolean;
   }) {
     const runtime = await resolveRuntime(this, true);
@@ -1249,6 +1640,8 @@ beamup
       console.warn(`Warning: Failed to set up config: ${message}`);
     }
 
+    await maybeCreateBeamupPreviews(instance, options);
+
     const envSetup = `export CODEX_HOME=${configDir}`;
     const fullCommand = `su - ${sandboxUser} -c '${envSetup}; codex'`;
 
@@ -1264,6 +1657,7 @@ beamup
 
 // ── beamup gemini ───────────────────────────────────────────────────
 
+addPreviewOptions(
 beamup
   .command("gemini")
   .description("Launch Gemini CLI in an E2EE sandbox")
@@ -1275,7 +1669,7 @@ beamup
   .option("--skip-auth-transfer", "Don't transfer credentials")
   .option("--env <key=value>", "Extra environment variable", collect, [])
   .option("-y, --yes", "Skip interactive prompts, use defaults")
-  .action(async function action(options: {
+).action(async function action(options: {
     template: string;
     internet?: boolean;
     timeout?: string;
@@ -1283,6 +1677,11 @@ beamup
     e2ee?: boolean;
     skipAuthTransfer?: boolean;
     env?: string[];
+    expose?: string[];
+    previewTtl?: string;
+    previewPath?: string;
+    privatePreview?: boolean;
+    rewritePreviewHost?: boolean;
     yes?: boolean;
   }) {
     const runtime = await resolveRuntime(this, true);
@@ -1355,6 +1754,8 @@ beamup
       console.warn(`Warning: Failed to set up config: ${message}`);
     }
 
+    await maybeCreateBeamupPreviews(instance, options);
+
     const envSetup = `export GEMINI_CONFIG_DIR=${configDir}`;
     const fullCommand = `su - ${sandboxUser} -c '${envSetup}; gemini'`;
 
@@ -1370,6 +1771,7 @@ beamup
 
 // ── beamup openclaw ─────────────────────────────────────────────────
 
+addPreviewOptions(
 beamup
   .command("openclaw")
   .description("Launch OpenClaw in an E2EE sandbox (permanent by default)")
@@ -1381,7 +1783,7 @@ beamup
   .option("--skip-auth-transfer", "Don't transfer OpenClaw state")
   .option("--env <key=value>", "Extra environment variable", collect, [])
   .option("-y, --yes", "Skip interactive prompts, use defaults")
-  .action(async function action(options: {
+).action(async function action(options: {
     template: string;
     internet?: boolean;
     timeout?: string;
@@ -1389,6 +1791,11 @@ beamup
     e2ee?: boolean;
     skipAuthTransfer?: boolean;
     env?: string[];
+    expose?: string[];
+    previewTtl?: string;
+    previewPath?: string;
+    privatePreview?: boolean;
+    rewritePreviewHost?: boolean;
     yes?: boolean;
   }) {
     const runtime = await resolveRuntime(this, true);
@@ -1499,6 +1906,8 @@ beamup
         console.warn(`Warning: Failed to write OpenClaw config: ${message}`);
       }
     }
+
+    await maybeCreateBeamupPreviews(instance, options);
 
     const envSetup = [
       `export OPENCLAW_STATE_DIR=${targetDir}`,

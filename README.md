@@ -68,6 +68,14 @@ Kill sandbox:
 omni sandbox kill <sandbox_id>
 ```
 
+Create a temporary preview URL for a web app running inside the sandbox:
+
+```bash
+omni sandbox expose <sandbox_id> 3000 --path /app
+omni sandbox exposures <sandbox_id>
+omni sandbox close <sandbox_id> <preview_id>
+```
+
 ## Command execution
 
 Run a command:
@@ -88,6 +96,15 @@ Run in background:
 omni command run <sandbox_id> "sleep 20" --background
 omni command ps <sandbox_id>
 omni command kill <sandbox_id> <pid>
+```
+
+## Beamup previews
+
+You can request preview URLs during launcher flows without blocking on readiness:
+
+```bash
+omni beamup claude --expose 3000 -y
+omni beamup codex --expose 5173 --preview-path /app -y
 ```
 
 ## Global options
