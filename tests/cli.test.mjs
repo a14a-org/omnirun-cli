@@ -62,6 +62,47 @@ function makeSdk(state) {
           uptime: "2026-03-06T12:00:00Z",
         }),
       };
+      this.exposures = {
+        create: async (port, options = {}) => {
+          const exposure = {
+            id: `exp-${state.previewCreates.length + 1}`,
+            sandboxId: this.sandboxId,
+            port,
+            hostname: `preview-${port}.omnirun-preview.dev`,
+            url: `https://preview-${port}.omnirun-preview.dev${options.openPath ?? ""}`,
+            accessUrl: options.visibility === "private"
+              ? `https://preview-${port}.omnirun-preview.dev${options.openPath ?? ""}?token=secret`
+              : undefined,
+            visibility: options.visibility ?? "public",
+            status: "ready",
+            createdAt: "2026-03-12T00:00:00Z",
+            expiresAt: "2026-03-12T01:00:00Z",
+            openPath: options.openPath,
+            preserveHost: options.preserveHost ?? true,
+          };
+          state.previewCreates.push({ sandboxId: this.sandboxId, port, options });
+          state.previewRecords.push(exposure);
+          return exposure;
+        },
+        list: async () => state.previewRecords.filter((record) => record.sandboxId === this.sandboxId),
+        get: async (exposureId) => {
+          const exposure = state.previewRecords.find((record) => record.id === exposureId);
+          return exposure ?? null;
+        },
+        refresh: async (exposureId, options = {}) => {
+          const exposure = state.previewRecords.find((record) => record.id === exposureId);
+          if (!exposure) throw new Error("exposure not found");
+          state.previewRefreshes.push({ sandboxId: this.sandboxId, exposureId, options });
+          return exposure;
+        },
+        close: async (exposureId) => {
+          state.previewCloses.push({ sandboxId: this.sandboxId, exposureId });
+          const exposure = state.previewRecords.find((record) => record.id === exposureId);
+          if (exposure) {
+            exposure.status = "revoked";
+          }
+        },
+      };
     }
 
     getHost(port) {
@@ -119,6 +160,10 @@ function makeState() {
     ptyCreates: [],
     commandKills: [],
     networkPolicies: [],
+    previewCreates: [],
+    previewRecords: [],
+    previewRefreshes: [],
+    previewCloses: [],
   };
 }
 
@@ -216,6 +261,76 @@ await runCase("sandbox kill terminates sandbox", async () => {
   assert.match(result.logs, /killed=sbx-1/);
 });
 
+await runCase("sandbox expose creates a preview URL and waits by default", async () => {
+  const state = makeState();
+  const result = await runCli(["sandbox", "expose", "sbx-1", "3000", "--path", "/app"], state);
+  assert.equal(state.previewCreates.length, 1);
+  assert.equal(state.previewCreates[0].port, 3000);
+  assert.equal(state.previewCreates[0].options.openPath, "/app");
+  assert.match(result.logs, /preview_url=https:\/\/preview-3000\.omnirun-preview\.dev\/app/);
+});
+
+await runCase("sandbox exposures lists preview URLs", async () => {
+  const state = makeState();
+  state.previewRecords.push({
+    id: "exp-1",
+    sandboxId: "sbx-1",
+    port: 3000,
+    hostname: "preview-3000.omnirun-preview.dev",
+    url: "https://preview-3000.omnirun-preview.dev",
+    visibility: "public",
+    status: "ready",
+    createdAt: "2026-03-12T00:00:00Z",
+    expiresAt: "2026-03-12T01:00:00Z",
+    preserveHost: true,
+  });
+  const result = await runCli(["sandbox", "exposures", "sbx-1"], state);
+  assert.match(result.logs, /id=exp-1/);
+  assert.match(result.logs, /url=https:\/\/preview-3000\.omnirun-preview\.dev/);
+});
+
+await runCase("sandbox close closes a preview URL", async () => {
+  const state = makeState();
+  state.previewRecords.push({
+    id: "exp-1",
+    sandboxId: "sbx-1",
+    port: 3000,
+    hostname: "preview-3000.omnirun-preview.dev",
+    url: "https://preview-3000.omnirun-preview.dev",
+    visibility: "public",
+    status: "ready",
+    createdAt: "2026-03-12T00:00:00Z",
+    expiresAt: "2026-03-12T01:00:00Z",
+    preserveHost: true,
+  });
+  const result = await runCli(["sandbox", "close", "sbx-1", "exp-1"], state);
+  assert.equal(state.previewCloses[0].exposureId, "exp-1");
+  assert.match(result.logs, /closed_preview=exp-1/);
+});
+
+await runCase("sandbox refresh-exposure refreshes a preview URL", async () => {
+  const state = makeState();
+  state.previewRecords.push({
+    id: "exp-1",
+    sandboxId: "sbx-1",
+    port: 3000,
+    hostname: "preview-3000.omnirun-preview.dev",
+    url: "https://preview-3000.omnirun-preview.dev",
+    visibility: "public",
+    status: "ready",
+    createdAt: "2026-03-12T00:00:00Z",
+    expiresAt: "2026-03-12T01:00:00Z",
+    preserveHost: true,
+  });
+  const result = await runCli(
+    ["sandbox", "refresh-exposure", "sbx-1", "exp-1", "--ttl", "1800"],
+    state
+  );
+  assert.equal(state.previewRefreshes[0].exposureId, "exp-1");
+  assert.equal(state.previewRefreshes[0].options.ttlSeconds, 1800);
+  assert.match(result.logs, /preview_id=exp-1/);
+});
+
 // ── beamup claude ──
 
 await runCase("beamup claude -y creates sandbox with default timeout", async () => {
@@ -249,6 +364,14 @@ await runCase("beamup claude -y --skip-auth-transfer skips credential transfer",
   const result = await runCli(["beamup", "claude", "-y", "--skip-auth-transfer"], state);
   // Should not log "Found Claude credentials"
   assert.ok(!result.logs.includes("Found Claude credentials"));
+});
+
+await runCase("beamup claude --expose 3000 -y creates a preview URL", async () => {
+  const state = makeState();
+  const result = await runCli(["beamup", "claude", "--expose", "3000", "-y"], state);
+  assert.equal(state.previewCreates.length, 1);
+  assert.equal(state.previewCreates[0].port, 3000);
+  assert.match(result.logs, /preview_url=https:\/\/preview-3000\.omnirun-preview\.dev/);
 });
 
 // ── beamup codex ──
