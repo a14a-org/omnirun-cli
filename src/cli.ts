@@ -653,6 +653,34 @@ async function discoverClaudeCredentials(authDir: string): Promise<string | null
 }
 
 
+async function discoverCodexCredentials(): Promise<string | null> {
+  const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+  try {
+    const authFile = await fs.readFile(path.join(codexHome, "auth.json"), "utf-8");
+    const parsed = JSON.parse(authFile);
+    if (parsed.access_token || parsed.api_key) {
+      return authFile;
+    }
+  } catch {
+    // file may not exist
+  }
+  return null;
+}
+
+async function discoverGeminiCredentials(): Promise<string | null> {
+  const geminiHome = path.join(os.homedir(), ".gemini");
+  try {
+    const oauthFile = await fs.readFile(path.join(geminiHome, "oauth_creds.json"), "utf-8");
+    const parsed = JSON.parse(oauthFile);
+    if (parsed.refresh_token) {
+      return oauthFile;
+    }
+  } catch {
+    // file may not exist
+  }
+  return null;
+}
+
 async function promptConfirm(question: string, defaultValue: boolean): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
   const hint = defaultValue ? "Y/n" : "y/N";
@@ -954,6 +982,210 @@ beamup
       // Non-TTY: start claude in background
       await instance.commands.run(fullCommand, { background: true } as RunCommandOptions & { background: true });
       console.log("Claude Code started in background.");
+      console.log(`Connect to sandbox: omni sandbox info ${instance.sandboxId}`);
+    }
+  });
+
+// ── beamup codex ────────────────────────────────────────────────────
+
+beamup
+  .command("codex")
+  .description("Launch OpenAI Codex CLI in an E2EE sandbox")
+  .option("--template <id>", "Sandbox template ID", "codex")
+  .option("--no-internet", "Disable internet access")
+  .option("--timeout <seconds>", "Sandbox timeout in seconds")
+  .option("--no-e2ee", "Disable E2EE")
+  .option("--skip-auth-transfer", "Don't transfer credentials")
+  .option("--env <key=value>", "Extra environment variable", collect, [])
+  .option("-y, --yes", "Skip interactive prompts, use defaults")
+  .action(async function action(options: {
+    template: string;
+    internet?: boolean;
+    timeout?: string;
+    e2ee?: boolean;
+    skipAuthTransfer?: boolean;
+    env?: string[];
+    yes?: boolean;
+  }) {
+    const runtime = await resolveRuntime(this, true);
+    const envVars = parseKeyValueList(options.env, "env");
+
+    const useDefaults = Boolean(options.yes) || !process.stdin.isTTY;
+    const transferAuth = options.skipAuthTransfer
+      ? false
+      : useDefaults || await promptConfirm("Transfer local Codex credentials to sandbox?", true);
+    const internet = options.internet != null
+      ? options.internet
+      : useDefaults || await promptConfirm("Enable full internet access?", true);
+    const timeout = options.timeout
+      ? parseInteger(options.timeout, "timeout")
+      : useDefaults
+        ? 3600
+        : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
+    const e2ee = options.e2ee !== false;
+
+    // Discover credentials
+    let credentials: string | null = null;
+    if (transferAuth) {
+      credentials = await discoverCodexCredentials();
+      if (credentials) {
+        console.log(`Found Codex credentials (${credentials.length} bytes).`);
+      } else {
+        console.warn(
+          "Warning: No Codex credentials found (checked ~/.codex/auth.json). " +
+            "You may need to run 'codex login' inside the sandbox."
+        );
+      }
+    }
+
+    if (!e2ee && transferAuth && credentials) {
+      console.warn(
+        "Warning: E2EE is disabled but credentials will be transferred. " +
+          "Secrets will not be encrypted in transit."
+      );
+    }
+
+    console.log("Creating Codex sandbox...");
+    const instance = await Sandbox.create(options.template, {
+      apiUrl: runtime.config.apiUrl,
+      apiKey: runtime.config.apiKey,
+      requestTimeout: runtime.config.requestTimeout,
+      e2ee,
+      internet,
+      timeout,
+      envVars,
+    });
+    console.log(`sandbox_id=${instance.sandboxId}`);
+
+    const sandboxUser = "coder";
+    const configDir = `/tmp/codex-config`;
+
+    try {
+      await instance.commands.run(`mkdir -p ${configDir}`);
+      if (credentials) {
+        const b64 = Buffer.from(credentials).toString("base64");
+        await instance.commands.run(
+          `echo '${b64}' | base64 -d > ${configDir}/auth.json`
+        );
+      }
+      await instance.commands.run(`chmod -R 700 ${configDir}`);
+      await instance.commands.run(`chown -R ${sandboxUser}:${sandboxUser} ${configDir}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`Warning: Failed to set up config: ${message}`);
+    }
+
+    const envSetup = `export CODEX_HOME=${configDir}`;
+    const fullCommand = `su - ${sandboxUser} -c '${envSetup}; codex'`;
+
+    if (process.stdin.isTTY) {
+      console.log("Attaching to Codex session...\n");
+      await attachPty(instance, fullCommand);
+    } else {
+      await instance.commands.run(fullCommand, { background: true } as RunCommandOptions & { background: true });
+      console.log("Codex started in background.");
+      console.log(`Connect to sandbox: omni sandbox info ${instance.sandboxId}`);
+    }
+  });
+
+// ── beamup gemini ───────────────────────────────────────────────────
+
+beamup
+  .command("gemini")
+  .description("Launch Gemini CLI in an E2EE sandbox")
+  .option("--template <id>", "Sandbox template ID", "gemini-cli")
+  .option("--no-internet", "Disable internet access")
+  .option("--timeout <seconds>", "Sandbox timeout in seconds")
+  .option("--no-e2ee", "Disable E2EE")
+  .option("--skip-auth-transfer", "Don't transfer credentials")
+  .option("--env <key=value>", "Extra environment variable", collect, [])
+  .option("-y, --yes", "Skip interactive prompts, use defaults")
+  .action(async function action(options: {
+    template: string;
+    internet?: boolean;
+    timeout?: string;
+    e2ee?: boolean;
+    skipAuthTransfer?: boolean;
+    env?: string[];
+    yes?: boolean;
+  }) {
+    const runtime = await resolveRuntime(this, true);
+    const envVars = parseKeyValueList(options.env, "env");
+
+    const useDefaults = Boolean(options.yes) || !process.stdin.isTTY;
+    const transferAuth = options.skipAuthTransfer
+      ? false
+      : useDefaults || await promptConfirm("Transfer local Gemini credentials to sandbox?", true);
+    const internet = options.internet != null
+      ? options.internet
+      : useDefaults || await promptConfirm("Enable full internet access?", true);
+    const timeout = options.timeout
+      ? parseInteger(options.timeout, "timeout")
+      : useDefaults
+        ? 3600
+        : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
+    const e2ee = options.e2ee !== false;
+
+    // Discover credentials
+    let credentials: string | null = null;
+    if (transferAuth) {
+      credentials = await discoverGeminiCredentials();
+      if (credentials) {
+        console.log(`Found Gemini credentials (${credentials.length} bytes).`);
+      } else {
+        console.warn(
+          "Warning: No Gemini credentials found (checked ~/.gemini/oauth_creds.json). " +
+            "You may need to authenticate inside the sandbox."
+        );
+      }
+    }
+
+    if (!e2ee && transferAuth && credentials) {
+      console.warn(
+        "Warning: E2EE is disabled but credentials will be transferred. " +
+          "Secrets will not be encrypted in transit."
+      );
+    }
+
+    console.log("Creating Gemini CLI sandbox...");
+    const instance = await Sandbox.create(options.template, {
+      apiUrl: runtime.config.apiUrl,
+      apiKey: runtime.config.apiKey,
+      requestTimeout: runtime.config.requestTimeout,
+      e2ee,
+      internet,
+      timeout,
+      envVars,
+    });
+    console.log(`sandbox_id=${instance.sandboxId}`);
+
+    const sandboxUser = "coder";
+    const configDir = `/tmp/gemini-config`;
+
+    try {
+      await instance.commands.run(`mkdir -p ${configDir}`);
+      if (credentials) {
+        const b64 = Buffer.from(credentials).toString("base64");
+        await instance.commands.run(
+          `echo '${b64}' | base64 -d > ${configDir}/oauth_creds.json`
+        );
+      }
+      await instance.commands.run(`chmod -R 700 ${configDir}`);
+      await instance.commands.run(`chown -R ${sandboxUser}:${sandboxUser} ${configDir}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`Warning: Failed to set up config: ${message}`);
+    }
+
+    const envSetup = `export GEMINI_CONFIG_DIR=${configDir}`;
+    const fullCommand = `su - ${sandboxUser} -c '${envSetup}; gemini'`;
+
+    if (process.stdin.isTTY) {
+      console.log("Attaching to Gemini CLI session...\n");
+      await attachPty(instance, fullCommand);
+    } else {
+      await instance.commands.run(fullCommand, { background: true } as RunCommandOptions & { background: true });
+      console.log("Gemini CLI started in background.");
       console.log(`Connect to sandbox: omni sandbox info ${instance.sandboxId}`);
     }
   });
