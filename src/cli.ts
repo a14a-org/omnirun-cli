@@ -9,13 +9,19 @@ import process from "node:process";
 import readline from "node:readline/promises";
 import { promisify } from "node:util";
 import {
-  CommandExitException,
-  Sandbox,
+  CommandExitException as DefaultCommandExitException,
+  Sandbox as DefaultSandbox,
   resolveConfig,
   type CreateSandboxOptions,
   type ListSandboxOptions,
   type RunCommandOptions,
 } from "@omnirun/sdk";
+
+type SdkModule = {
+  Sandbox: typeof DefaultSandbox;
+  CommandExitException: typeof DefaultCommandExitException;
+  [key: string]: unknown;
+};
 
 const DEFAULT_API_URL = "https://api.omnirun.io";
 const DEFAULT_ENV_FILE = ".env";
@@ -210,6 +216,10 @@ function commandOptionsFromInput(opts: {
   if (typeof opts.timeout === "number") out.timeout = opts.timeout;
   return out;
 }
+
+export function createProgram(sdk?: SdkModule): Command {
+const Sandbox = sdk?.Sandbox ?? DefaultSandbox;
+const CommandExitException = sdk?.CommandExitException ?? DefaultCommandExitException;
 
 const program = new Command();
 program
@@ -681,6 +691,49 @@ async function discoverGeminiCredentials(): Promise<string | null> {
   return null;
 }
 
+async function discoverOpenClawStateDir(): Promise<string | null> {
+  const stateDir = process.env.OPENCLAW_STATE_DIR
+    ?? path.join(process.env.OPENCLAW_HOME ?? os.homedir(), ".openclaw");
+
+  try {
+    const stat = await fs.stat(stateDir);
+    if (stat.isDirectory()) return stateDir;
+  } catch {
+    // directory may not exist
+  }
+
+  return null;
+}
+
+async function transferOpenClawState(
+  instance: Awaited<ReturnType<typeof Sandbox.create>>,
+  stateDir: string,
+  targetDir: string,
+  sandboxUser: string,
+): Promise<void> {
+  const execFileAsync = promisify(execFile);
+  const { stdout: tarBuffer } = await execFileAsync("tar", [
+    "czf", "-",
+    "--exclude", "memory/lancedb",
+    "--exclude", "nodes",
+    "-C", path.dirname(stateDir),
+    path.basename(stateDir),
+  ], { encoding: "buffer", maxBuffer: 50 * 1024 * 1024 });
+
+  const tarPath = "/tmp/openclaw-state.tar.gz";
+  await instance.files.write(tarPath, new Uint8Array(tarBuffer));
+
+  const extractDir = "/tmp/openclaw-extract";
+  await instance.commands.run(
+    `mkdir -p ${extractDir} && ` +
+    `tar xzf ${tarPath} -C ${extractDir} && ` +
+    `mv ${extractDir}/${path.basename(stateDir)} ${targetDir} && ` +
+    `rm -rf ${extractDir} ${tarPath}`
+  );
+  await instance.commands.run(`chmod -R 700 ${targetDir}`);
+  await instance.commands.run(`chown -R ${sandboxUser}:${sandboxUser} ${targetDir}`);
+}
+
 async function promptConfirm(question: string, defaultValue: boolean): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
   const hint = defaultValue ? "Y/n" : "y/N";
@@ -734,6 +787,7 @@ async function promptBeamupClaude(options: {
   skipPermissions?: boolean;
   internet?: boolean;
   timeout?: string;
+  permanent?: boolean;
   e2ee?: boolean;
   authDir?: string;
   skipAuthTransfer?: boolean;
@@ -743,12 +797,20 @@ async function promptBeamupClaude(options: {
   const authDir = options.authDir ?? path.join(os.homedir(), ".claude");
   const envVars = parseKeyValueList(options.env, "env");
 
+  // Timeout resolution: --timeout wins > --permanent > default
+  const resolveTimeout = async (useDefaults: boolean): Promise<number> => {
+    if (options.timeout != null) return parseInteger(options.timeout, "timeout");
+    if (options.permanent) return 0;
+    if (useDefaults) return 3600;
+    return parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
+  };
+
   if (options.yes || !process.stdin.isTTY) {
     return {
       transferAuth: !options.skipAuthTransfer,
       skipPermissions: Boolean(options.skipPermissions),
       internet: options.internet !== false,
-      timeout: options.timeout ? parseInteger(options.timeout, "timeout") : 3600,
+      timeout: await resolveTimeout(true),
       e2ee: options.e2ee !== false,
       authDir,
       envVars,
@@ -771,9 +833,7 @@ async function promptBeamupClaude(options: {
     ? options.internet
     : await promptConfirm("Enable full internet access?", true);
 
-  const timeoutStr = options.timeout
-    ?? await promptInput("Sandbox timeout in seconds:", "3600");
-  const timeout = parseInteger(timeoutStr, "timeout");
+  const timeout = await resolveTimeout(false);
 
   return {
     transferAuth,
@@ -880,6 +940,7 @@ beamup
   .option("--skip-permissions", "Run with --dangerously-skip-permissions")
   .option("--no-internet", "Disable internet access")
   .option("--timeout <seconds>", "Sandbox timeout in seconds")
+  .option("--permanent", "Don't auto-expire the sandbox (timeout=0)")
   .option("--no-e2ee", "Disable E2EE")
   .option("--auth-dir <path>", "Custom Claude auth directory (default: ~/.claude)")
   .option("--skip-auth-transfer", "Don't transfer credentials")
@@ -890,6 +951,7 @@ beamup
     skipPermissions?: boolean;
     internet?: boolean;
     timeout?: string;
+    permanent?: boolean;
     e2ee?: boolean;
     authDir?: string;
     skipAuthTransfer?: boolean;
@@ -994,6 +1056,7 @@ beamup
   .option("--template <id>", "Sandbox template ID", "codex")
   .option("--no-internet", "Disable internet access")
   .option("--timeout <seconds>", "Sandbox timeout in seconds")
+  .option("--permanent", "Don't auto-expire the sandbox (timeout=0)")
   .option("--no-e2ee", "Disable E2EE")
   .option("--skip-auth-transfer", "Don't transfer credentials")
   .option("--env <key=value>", "Extra environment variable", collect, [])
@@ -1002,6 +1065,7 @@ beamup
     template: string;
     internet?: boolean;
     timeout?: string;
+    permanent?: boolean;
     e2ee?: boolean;
     skipAuthTransfer?: boolean;
     env?: string[];
@@ -1017,11 +1081,13 @@ beamup
     const internet = options.internet != null
       ? options.internet
       : useDefaults || await promptConfirm("Enable full internet access?", true);
-    const timeout = options.timeout
+    const timeout = options.timeout != null
       ? parseInteger(options.timeout, "timeout")
-      : useDefaults
-        ? 3600
-        : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
+      : options.permanent
+        ? 0
+        : useDefaults
+          ? 3600
+          : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
     const e2ee = options.e2ee !== false;
 
     // Discover credentials
@@ -1096,6 +1162,7 @@ beamup
   .option("--template <id>", "Sandbox template ID", "gemini-cli")
   .option("--no-internet", "Disable internet access")
   .option("--timeout <seconds>", "Sandbox timeout in seconds")
+  .option("--permanent", "Don't auto-expire the sandbox (timeout=0)")
   .option("--no-e2ee", "Disable E2EE")
   .option("--skip-auth-transfer", "Don't transfer credentials")
   .option("--env <key=value>", "Extra environment variable", collect, [])
@@ -1104,6 +1171,7 @@ beamup
     template: string;
     internet?: boolean;
     timeout?: string;
+    permanent?: boolean;
     e2ee?: boolean;
     skipAuthTransfer?: boolean;
     env?: string[];
@@ -1119,11 +1187,13 @@ beamup
     const internet = options.internet != null
       ? options.internet
       : useDefaults || await promptConfirm("Enable full internet access?", true);
-    const timeout = options.timeout
+    const timeout = options.timeout != null
       ? parseInteger(options.timeout, "timeout")
-      : useDefaults
-        ? 3600
-        : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
+      : options.permanent
+        ? 0
+        : useDefaults
+          ? 3600
+          : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
     const e2ee = options.e2ee !== false;
 
     // Discover credentials
@@ -1190,8 +1260,141 @@ beamup
     }
   });
 
-program.parseAsync(process.argv).catch((err: unknown) => {
-  const message = err instanceof Error ? err.message : String(err);
-  console.error(`Error: ${message}`);
-  process.exit(1);
-});
+// ── beamup openclaw ─────────────────────────────────────────────────
+
+beamup
+  .command("openclaw")
+  .description("Launch OpenClaw in an E2EE sandbox (permanent by default)")
+  .option("--template <id>", "Sandbox template ID", "openclaw")
+  .option("--no-internet", "Disable internet access")
+  .option("--timeout <seconds>", "Override with fixed timeout (overrides --permanent)")
+  .option("--permanent", "Don't auto-expire the sandbox (default for openclaw)")
+  .option("--no-e2ee", "Disable E2EE")
+  .option("--skip-auth-transfer", "Don't transfer OpenClaw state")
+  .option("--env <key=value>", "Extra environment variable", collect, [])
+  .option("-y, --yes", "Skip interactive prompts, use defaults")
+  .action(async function action(options: {
+    template: string;
+    internet?: boolean;
+    timeout?: string;
+    permanent?: boolean;
+    e2ee?: boolean;
+    skipAuthTransfer?: boolean;
+    env?: string[];
+    yes?: boolean;
+  }) {
+    const runtime = await resolveRuntime(this, true);
+    const envVars = parseKeyValueList(options.env, "env");
+
+    const useDefaults = Boolean(options.yes) || !process.stdin.isTTY;
+
+    const transferAuth = options.skipAuthTransfer
+      ? false
+      : useDefaults || await promptConfirm("Transfer local OpenClaw state to sandbox?", true);
+    const internet = options.internet != null
+      ? options.internet
+      : useDefaults || await promptConfirm("Enable full internet access?", true);
+
+    // OpenClaw defaults to permanent (timeout=0)
+    let timeout: number;
+    if (options.timeout != null) {
+      timeout = parseInteger(options.timeout, "timeout");
+    } else if (options.permanent === false) {
+      // Explicit --no-permanent
+      timeout = useDefaults
+        ? 3600
+        : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
+    } else {
+      // Default: permanent
+      timeout = useDefaults
+        ? 0
+        : (await promptConfirm("Keep sandbox running permanently?", true))
+          ? 0
+          : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
+    }
+
+    const e2ee = options.e2ee !== false;
+
+    // Discover local OpenClaw state directory
+    let stateDir: string | null = null;
+    if (transferAuth) {
+      stateDir = await discoverOpenClawStateDir();
+      if (stateDir) {
+        console.log(`Found OpenClaw state directory: ${stateDir}`);
+      } else {
+        console.warn(
+          "Warning: No OpenClaw state directory found. " +
+            "You may need to set up OpenClaw manually inside the sandbox."
+        );
+      }
+    }
+
+    if (!e2ee && transferAuth && stateDir) {
+      console.warn(
+        "Warning: E2EE is disabled but state will be transferred. " +
+          "Secrets will not be encrypted in transit."
+      );
+    }
+
+    console.log("Creating OpenClaw sandbox...");
+    const instance = await Sandbox.create(options.template, {
+      apiUrl: runtime.config.apiUrl,
+      apiKey: runtime.config.apiKey,
+      requestTimeout: runtime.config.requestTimeout,
+      e2ee,
+      internet,
+      timeout,
+      envVars,
+    });
+    console.log(`sandbox_id=${instance.sandboxId}`);
+
+    const sandboxUser = "coder";
+    const targetDir = "/tmp/openclaw-state";
+
+    // Transfer OpenClaw state
+    if (stateDir) {
+      try {
+        await transferOpenClawState(instance, stateDir, targetDir, sandboxUser);
+        console.log("OpenClaw state transferred.");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`Warning: Failed to transfer OpenClaw state: ${message}`);
+      }
+    }
+
+    const envSetup = [
+      `export OPENCLAW_STATE_DIR=${targetDir}`,
+      `export OPENCLAW_CONFIG_PATH=${targetDir}/openclaw.json`,
+    ].join("; ");
+
+    if (process.stdin.isTTY) {
+      const fullCommand = `su - ${sandboxUser} -c '${envSetup}; openclaw tui'`;
+      console.log("Attaching to OpenClaw TUI...\n");
+      await attachPty(instance, fullCommand);
+    } else {
+      const daemonCommand = `su - ${sandboxUser} -c '${envSetup}; openclaw gateway start'`;
+      await instance.commands.run(daemonCommand, { background: true } as RunCommandOptions & { background: true });
+
+      const gatewayUrl = instance.getHost(4767);
+      console.log("OpenClaw gateway started in background.");
+      console.log(`Gateway URL: ${gatewayUrl}`);
+      console.log(`Reconnect: omni sandbox info ${instance.sandboxId}`);
+    }
+  });
+
+return program;
+}
+
+// Run CLI when executed directly (not imported for testing)
+const isDirectExecution = process.argv[1] && (
+  process.argv[1].endsWith("/cli.js") ||
+  process.argv[1].endsWith("/cli.ts") ||
+  process.argv[1].endsWith("omni")
+);
+if (isDirectExecution) {
+  createProgram().parseAsync(process.argv).catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Error: ${message}`);
+    process.exit(1);
+  });
+}
