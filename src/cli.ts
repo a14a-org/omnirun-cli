@@ -2,6 +2,7 @@
 
 import { Command } from "commander";
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -773,6 +774,113 @@ async function promptInput(question: string, defaultValue: string): Promise<stri
   }
 }
 
+async function promptSecret(question: string): Promise<string> {
+  return new Promise((resolve) => {
+    process.stderr.write(question + " ");
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    if (stdin.isTTY) stdin.setRawMode(true);
+    stdin.resume();
+
+    let value = "";
+    const onData = (data: Buffer) => {
+      const char = data.toString();
+      if (char === "\n" || char === "\r") {
+        process.stderr.write("\n");
+        stdin.removeListener("data", onData);
+        if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
+        stdin.pause();
+        resolve(value);
+      } else if (char === "\u007f" || char === "\b") {
+        // Backspace
+        if (value.length > 0) {
+          value = value.slice(0, -1);
+          process.stderr.write("\b \b");
+        }
+      } else if (char === "\u0003") {
+        // Ctrl+C
+        process.stderr.write("\n");
+        stdin.removeListener("data", onData);
+        if (stdin.isTTY) stdin.setRawMode(wasRaw ?? false);
+        stdin.pause();
+        resolve("");
+      } else if (char >= " ") {
+        value += char;
+        process.stderr.write("*");
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+type OpenClawSetupResult = {
+  config: string;
+  envFile: string;
+  gatewayToken: string;
+};
+
+function generateOpenClawConfig(keys: {
+  anthropicKey?: string;
+  openaiKey?: string;
+  gatewayToken: string;
+}): OpenClawSetupResult {
+  const providers: Record<string, { apiKey: string }> = {};
+  const envLines: string[] = [];
+
+  if (keys.anthropicKey) {
+    providers.anthropic = { apiKey: "${ANTHROPIC_API_KEY}" };
+    envLines.push(`ANTHROPIC_API_KEY=${keys.anthropicKey}`);
+  }
+  if (keys.openaiKey) {
+    providers.openai = { apiKey: "${OPENAI_API_KEY}" };
+    envLines.push(`OPENAI_API_KEY=${keys.openaiKey}`);
+  }
+
+  const primaryModel = keys.anthropicKey
+    ? "anthropic/claude-sonnet-4-5"
+    : "openai/gpt-4o";
+
+  const config = {
+    meta: {
+      lastTouchedVersion: "1.0.0",
+      lastTouchedAt: new Date().toISOString().slice(0, 10),
+    },
+    gateway: {
+      port: 18789,
+      bind: "loopback",
+      auth: { mode: "token", token: keys.gatewayToken },
+    },
+    agents: {
+      defaults: {
+        workspace: "~/.openclaw/workspace",
+        model: { primary: primaryModel },
+      },
+      list: [{ id: "main", default: true }],
+    },
+    models: { providers },
+    session: { dmScope: "per-channel-peer" },
+  };
+
+  return {
+    config: JSON.stringify(config, null, 2),
+    envFile: envLines.join("\n") + "\n",
+    gatewayToken: keys.gatewayToken,
+  };
+}
+
+async function setupOpenClawOnSandbox(
+  instance: Awaited<ReturnType<typeof Sandbox.create>>,
+  targetDir: string,
+  sandboxUser: string,
+  setup: OpenClawSetupResult,
+): Promise<void> {
+  await instance.commands.run(`mkdir -p ${targetDir}/workspace`);
+  await instance.files.write(`${targetDir}/openclaw.json`, setup.config);
+  await instance.files.write(`${targetDir}/.env`, setup.envFile);
+  await instance.commands.run(`chmod -R 700 ${targetDir}`);
+  await instance.commands.run(`chown -R ${sandboxUser}:${sandboxUser} ${targetDir}`);
+}
+
 type BeamupClaudeConfig = {
   transferAuth: boolean;
   skipPermissions: boolean;
@@ -1317,10 +1425,32 @@ beamup
 
     // Discover local OpenClaw state directory
     let stateDir: string | null = null;
+    let freshSetup: OpenClawSetupResult | null = null;
+
     if (transferAuth) {
       stateDir = await discoverOpenClawStateDir();
       if (stateDir) {
         console.log(`Found OpenClaw state directory: ${stateDir}`);
+      } else if (!useDefaults && process.stdin.isTTY) {
+        // No local state — offer guided setup
+        console.log("\nNo OpenClaw state found locally.\n");
+        const wantSetup = await promptConfirm("Set up OpenClaw now?", true);
+        if (wantSetup) {
+          const anthropicKey = await promptSecret("Anthropic API key:");
+          const openaiKey = await promptSecret("OpenAI API key (optional, Enter to skip):");
+          const gatewayToken = crypto.randomBytes(24).toString("hex");
+
+          if (!anthropicKey && !openaiKey) {
+            console.warn("Warning: No API keys provided. OpenClaw will need manual configuration.");
+          } else {
+            freshSetup = generateOpenClawConfig({
+              anthropicKey: anthropicKey || undefined,
+              openaiKey: openaiKey || undefined,
+              gatewayToken,
+            });
+            console.log(`Gateway token: ${gatewayToken}`);
+          }
+        }
       } else {
         console.warn(
           "Warning: No OpenClaw state directory found. " +
@@ -1329,10 +1459,10 @@ beamup
       }
     }
 
-    if (!e2ee && transferAuth && stateDir) {
+    if (!e2ee && transferAuth && (stateDir || freshSetup)) {
       console.warn(
-        "Warning: E2EE is disabled but state will be transferred. " +
-          "Secrets will not be encrypted in transit."
+        "Warning: E2EE is disabled but secrets will be transferred. " +
+          "They will not be encrypted in transit."
       );
     }
 
@@ -1351,7 +1481,7 @@ beamup
     const sandboxUser = "coder";
     const targetDir = "/tmp/openclaw-state";
 
-    // Transfer OpenClaw state
+    // Transfer existing state or write fresh config
     if (stateDir) {
       try {
         await transferOpenClawState(instance, stateDir, targetDir, sandboxUser);
@@ -1359,6 +1489,14 @@ beamup
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`Warning: Failed to transfer OpenClaw state: ${message}`);
+      }
+    } else if (freshSetup) {
+      try {
+        await setupOpenClawOnSandbox(instance, targetDir, sandboxUser, freshSetup);
+        console.log("OpenClaw config written to sandbox.");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`Warning: Failed to write OpenClaw config: ${message}`);
       }
     }
 

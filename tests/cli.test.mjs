@@ -324,4 +324,21 @@ await runCase("beamup openclaw -y in non-TTY prints gateway URL and sandbox ID",
   assert.match(result.logs, /Gateway URL:/i);
 });
 
+// ── openclaw fresh setup (non-interactive path) ──
+
+await runCase("beamup openclaw -y without local state writes no config (non-TTY)", async () => {
+  const state = makeState();
+  const origEnv = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = "/tmp/nonexistent-openclaw-" + Date.now();
+  try {
+    await runCli(["beamup", "openclaw", "-y"], state);
+    // In non-TTY/-y mode, no guided setup — just a warning
+    const configWrites = state.fileWrites.filter(w => w.path.includes("openclaw"));
+    assert.equal(configWrites.length, 0);
+  } finally {
+    if (origEnv === undefined) delete process.env.OPENCLAW_STATE_DIR;
+    else process.env.OPENCLAW_STATE_DIR = origEnv;
+  }
+});
+
 console.log("\nAll tests passed!");
