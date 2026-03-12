@@ -1,5 +1,11 @@
 # @omnirun/cli
 
+## 0.5.0
+
+### Minor Changes
+
+- 21eea4e: Add preview URL commands (expose, exposures, close, refresh-exposure) and --expose flag on beamup commands
+
 ## 0.4.1
 
 ### Patch Changes
