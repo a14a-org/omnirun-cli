@@ -1,5 +1,11 @@
 # @omnirun/cli
 
+## 0.5.1
+
+### Patch Changes
+
+- 692bd4d: Bump @omnirun/sdk dependency to >=0.3.1 to include exposures module
+
 ## 0.5.0
 
 ### Minor Changes
