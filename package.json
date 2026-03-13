@@ -29,7 +29,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@omnirun/sdk": "^0.3.0",
+    "@omnirun/sdk": "^0.3.1",
     "commander": "^14.0.1"
   },
   "devDependencies": {
