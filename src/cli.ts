@@ -1255,7 +1255,7 @@ async function promptBeamupClaude(options: {
       skipPermissions: Boolean(options.skipPermissions),
       internet: options.internet !== false,
       timeout: await resolveTimeout(true),
-      e2ee: options.e2ee !== false,
+      e2ee: Boolean(options.e2ee),
       authDir,
       envVars,
     };
@@ -1284,7 +1284,7 @@ async function promptBeamupClaude(options: {
     skipPermissions: modeIndex === 1,
     internet,
     timeout,
-    e2ee: options.e2ee !== false,
+    e2ee: Boolean(options.e2ee),
     authDir,
     envVars,
   };
@@ -1427,7 +1427,7 @@ beamup
   .option("--no-internet", "Disable internet access")
   .option("--timeout <seconds>", "Sandbox timeout in seconds")
   .option("--permanent", "Don't auto-expire the sandbox (timeout=0)")
-  .option("--no-e2ee", "Disable E2EE")
+  .option("--e2ee", "Enable E2EE (requires key generation)")
   .option("--auth-dir <path>", "Custom Claude auth directory (default: ~/.claude)")
   .option("--skip-auth-transfer", "Don't transfer credentials")
   .option("--env <key=value>", "Extra environment variable", collect, [])
@@ -1466,14 +1466,6 @@ beamup
             "). You may need to authenticate manually inside the sandbox."
         );
       }
-    }
-
-    // Warn if E2EE disabled but transferring auth
-    if (!config.e2ee && config.transferAuth && credentials) {
-      console.warn(
-        "Warning: E2EE is disabled but credentials will be transferred. " +
-          "Secrets will not be encrypted in transit."
-      );
     }
 
     // Create sandbox
@@ -1551,7 +1543,7 @@ beamup
   .option("--no-internet", "Disable internet access")
   .option("--timeout <seconds>", "Sandbox timeout in seconds")
   .option("--permanent", "Don't auto-expire the sandbox (timeout=0)")
-  .option("--no-e2ee", "Disable E2EE")
+  .option("--e2ee", "Enable E2EE (requires key generation)")
   .option("--skip-auth-transfer", "Don't transfer credentials")
   .option("--env <key=value>", "Extra environment variable", collect, [])
   .option("-y, --yes", "Skip interactive prompts, use defaults")
@@ -1587,7 +1579,7 @@ beamup
         : useDefaults
           ? 3600
           : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
-    const e2ee = options.e2ee !== false;
+    const e2ee = Boolean(options.e2ee);
 
     // Discover credentials
     let credentials: string | null = null;
@@ -1603,12 +1595,6 @@ beamup
       }
     }
 
-    if (!e2ee && transferAuth && credentials) {
-      console.warn(
-        "Warning: E2EE is disabled but credentials will be transferred. " +
-          "Secrets will not be encrypted in transit."
-      );
-    }
 
     console.log("Creating Codex sandbox...");
     const instance = await Sandbox.create(options.template, {
@@ -1665,7 +1651,7 @@ beamup
   .option("--no-internet", "Disable internet access")
   .option("--timeout <seconds>", "Sandbox timeout in seconds")
   .option("--permanent", "Don't auto-expire the sandbox (timeout=0)")
-  .option("--no-e2ee", "Disable E2EE")
+  .option("--e2ee", "Enable E2EE (requires key generation)")
   .option("--skip-auth-transfer", "Don't transfer credentials")
   .option("--env <key=value>", "Extra environment variable", collect, [])
   .option("-y, --yes", "Skip interactive prompts, use defaults")
@@ -1701,7 +1687,7 @@ beamup
         : useDefaults
           ? 3600
           : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
-    const e2ee = options.e2ee !== false;
+    const e2ee = Boolean(options.e2ee);
 
     // Discover credentials
     let credentials: string | null = null;
@@ -1717,12 +1703,6 @@ beamup
       }
     }
 
-    if (!e2ee && transferAuth && credentials) {
-      console.warn(
-        "Warning: E2EE is disabled but credentials will be transferred. " +
-          "Secrets will not be encrypted in transit."
-      );
-    }
 
     console.log("Creating Gemini CLI sandbox...");
     const instance = await Sandbox.create(options.template, {
@@ -1779,7 +1759,7 @@ beamup
   .option("--no-internet", "Disable internet access")
   .option("--timeout <seconds>", "Override with fixed timeout (overrides --permanent)")
   .option("--permanent", "Don't auto-expire the sandbox (default for openclaw)")
-  .option("--no-e2ee", "Disable E2EE")
+  .option("--e2ee", "Enable E2EE (requires key generation)")
   .option("--skip-auth-transfer", "Don't transfer OpenClaw state")
   .option("--env <key=value>", "Extra environment variable", collect, [])
   .option("-y, --yes", "Skip interactive prompts, use defaults")
@@ -1828,7 +1808,7 @@ beamup
           : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
     }
 
-    const e2ee = options.e2ee !== false;
+    const e2ee = Boolean(options.e2ee);
 
     // Discover local OpenClaw state directory
     let stateDir: string | null = null;
