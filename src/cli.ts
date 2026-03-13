@@ -609,11 +609,11 @@ sandbox
       templateId: info.templateId,
       state: info.state,
       trafficTokenLength: instance.trafficAccessToken.length,
-      e2ee: instance.e2ee
+      e2ee: (instance as any).e2ee
         ? {
-            enabled: instance.e2ee.enabled,
-            clientPublicKeyLength: instance.e2ee.clientPublicKey.length,
-            serverPublicKeyPresent: Boolean(instance.e2ee.serverPublicKey),
+            enabled: (instance as any).e2ee.enabled,
+            clientPublicKeyLength: (instance as any).e2ee.clientPublicKey?.length ?? 0,
+            serverPublicKeyPresent: Boolean((instance as any).e2ee.serverPublicKey),
           }
         : null,
     };
