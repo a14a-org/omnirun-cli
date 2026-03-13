@@ -1,5 +1,11 @@
 # @omnirun/cli
 
+## 0.5.2
+
+### Patch Changes
+
+- db756b0: Fix e2ee defaulting to true which broke sandbox creation after SDK 0.3.1 update
+
 ## 0.5.1
 
 ### Patch Changes
