@@ -1,6 +1,6 @@
 {
   "name": "@omnirun/cli",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "CLI for managing OmniRun sandboxes",
   "type": "module",
   "bin": {
