@@ -1,5 +1,11 @@
 # @omnirun/cli
 
+## 0.5.3
+
+### Patch Changes
+
+- 4303f14: Fix sandbox info showing undefined for sandboxId and templateId
+
 ## 0.5.2
 
 ### Patch Changes
