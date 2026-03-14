@@ -1,5 +1,11 @@
 # @omnirun/cli
 
+## 0.6.0
+
+### Minor Changes
+
+- bd69660: Add sandbox history command and sandbox info fallback to historical records
+
 ## 0.5.3
 
 ### Patch Changes
