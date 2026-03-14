@@ -668,20 +668,91 @@ sandbox
   .argument("<sandboxId>", "Sandbox ID")
   .action(async function action(sandboxId: string) {
     const runtime = await resolveRuntime(this, true);
-    const instance = await Sandbox.connect(sandboxId, runtime.config);
-    const info = await instance.getInfo();
+
+    // Try live sandbox first
+    try {
+      const instance = await Sandbox.connect(sandboxId, runtime.config);
+      const info = await instance.getInfo();
+
+      if (runtime.json) {
+        printJson(info);
+        return;
+      }
+
+      console.log(`sandbox_id=${info.sandboxId}`);
+      console.log(`template_id=${info.templateId}`);
+      console.log(`state=${info.state}`);
+      console.log(`started_at=${info.startedAt}`);
+      console.log(`cpu_count=${info.cpuCount}`);
+      console.log(`memory_mb=${info.memoryMB}`);
+      return;
+    } catch {
+      // Fall through to history lookup
+    }
+
+    // Try history
+    const hist = await Sandbox.getHistory(sandboxId, runtime.config);
+    if (!hist) {
+      throw new Error("sandbox not found (checked live and history)");
+    }
 
     if (runtime.json) {
-      printJson(info);
+      printJson(hist);
       return;
     }
 
-    console.log(`sandbox_id=${info.sandboxId}`);
-    console.log(`template_id=${info.templateId}`);
-    console.log(`state=${info.state}`);
-    console.log(`started_at=${info.startedAt}`);
-    console.log(`cpu_count=${info.cpuCount}`);
-    console.log(`memory_mb=${info.memoryMB}`);
+    console.log(`sandbox_id=${hist.sandboxId} (historical)`);
+    console.log(`template_id=${hist.templateId}`);
+    console.log(`status=${hist.status}`);
+    console.log(`created_at=${hist.createdAt}`);
+    if (hist.stoppedAt) console.log(`stopped_at=${hist.stoppedAt}`);
+    console.log(`cpu_count=${hist.cpuCount}`);
+    console.log(`memory_mb=${hist.memoryMB}`);
+    console.log(`timeout=${hist.timeoutSeconds}s`);
+  });
+
+sandbox
+  .command("history")
+  .description("List past sandboxes")
+  .option("--limit <n>", "Number of records to return", "20")
+  .option("--offset <n>", "Offset for pagination", "0")
+  .action(async function action(options: { limit: string; offset: string }) {
+    const runtime = await resolveRuntime(this, true);
+    const items = await Sandbox.history({
+      ...runtime.config,
+      limit: parseInt(options.limit, 10),
+      offset: parseInt(options.offset, 10),
+    });
+
+    if (runtime.json) {
+      printJson(items);
+      return;
+    }
+
+    if (items.length === 0) {
+      console.log("No sandbox history found.");
+      return;
+    }
+
+    // Table header
+    const cols = [
+      { key: "sandboxId", label: "ID", width: 34 },
+      { key: "templateId", label: "TEMPLATE", width: 14 },
+      { key: "status", label: "STATUS", width: 12 },
+      { key: "createdAt", label: "CREATED", width: 20 },
+      { key: "stoppedAt", label: "STOPPED", width: 20 },
+    ] as const;
+
+    console.log(
+      cols.map((c) => c.label.padEnd(c.width)).join("  ")
+    );
+    for (const item of items) {
+      const row = cols.map((c) => {
+        const val = (item as any)[c.key] ?? "-";
+        return String(val).slice(0, c.width).padEnd(c.width);
+      });
+      console.log(row.join("  "));
+    }
   });
 
 sandbox
