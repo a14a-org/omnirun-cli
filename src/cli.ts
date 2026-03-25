@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 import {
   CommandExitException as DefaultCommandExitException,
   Sandbox as DefaultSandbox,
+  LLM,
   resolveConfig,
   type CreateSandboxOptions,
   type ListSandboxOptions,
@@ -1977,6 +1978,116 @@ beamup
       console.log("OpenClaw gateway started in background.");
       console.log(`Gateway URL: ${gatewayUrl}`);
       console.log(`Reconnect: omni sandbox info ${instance.sandboxId}`);
+    }
+  });
+
+// ── LLM proxy commands ──────────────────────────────────────────────
+
+const llm = program.command("llm").description("LLM proxy for chat completions, models, and usage");
+
+llm
+  .command("chat")
+  .description("Send a chat completion request")
+  .argument("[message]", "Message to send (reads from stdin when omitted)")
+  .option("--model <model>", "Model identifier", "openai/gpt-4o-mini")
+  .option("--system <prompt>", "System prompt")
+  .option("--max-tokens <n>", "Maximum tokens in response", (v: string) => parseInteger(v, "max-tokens"))
+  .option("--temperature <n>", "Sampling temperature", Number.parseFloat)
+  .option("--no-stream", "Disable streaming")
+  .action(async function action(
+    message: string | undefined,
+    options: {
+      model: string;
+      system?: string;
+      maxTokens?: number;
+      temperature?: number;
+      stream: boolean;
+    },
+  ) {
+    const { config } = await resolveRuntime(this, true);
+    const client = new LLM(config);
+
+    // Read message from positional arg or stdin
+    let userMessage = message;
+    if (!userMessage) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin) {
+        chunks.push(chunk);
+      }
+      userMessage = Buffer.concat(chunks).toString("utf8").trim();
+    }
+    if (!userMessage) {
+      throw new Error("No message provided. Pass as argument or pipe via stdin.");
+    }
+
+    const messages: { role: "system" | "user" | "assistant"; content: string }[] = [];
+    if (options.system) {
+      messages.push({ role: "system", content: options.system });
+    }
+    messages.push({ role: "user", content: userMessage });
+
+    const request = {
+      model: options.model,
+      messages,
+      ...(options.maxTokens != null ? { max_tokens: options.maxTokens } : {}),
+      ...(options.temperature != null ? { temperature: options.temperature } : {}),
+    };
+
+    if (options.stream) {
+      for await (const chunk of client.streamChatCompletion(request)) {
+        process.stdout.write(chunk);
+      }
+      process.stdout.write("\n");
+    } else {
+      const resp = await client.chatCompletion(request);
+      const content = resp.choices?.[0]?.message?.content ?? "";
+      process.stdout.write(content + "\n");
+      if (resp.usage) {
+        const u = resp.usage;
+        process.stderr.write(
+          `tokens: ${u.prompt_tokens} prompt + ${u.completion_tokens} completion = ${u.total_tokens} total` +
+            (u.cost != null ? ` ($${u.cost.toFixed(4)})` : "") +
+            "\n",
+        );
+      }
+    }
+  });
+
+llm
+  .command("models")
+  .description("List available LLM models")
+  .action(async function action() {
+    const { config, json: jsonOutput } = await resolveRuntime(this, true);
+    const client = new LLM(config);
+    const models = await client.listModels();
+
+    if (jsonOutput) {
+      console.log(JSON.stringify(models, null, 2));
+    } else {
+      if (models.length === 0) {
+        console.log("No models available.");
+      } else {
+        for (const m of models) {
+          console.log(m.id);
+        }
+      }
+    }
+  });
+
+llm
+  .command("usage")
+  .description("Show LLM spend and remaining credits")
+  .action(async function action() {
+    const { config, json: jsonOutput } = await resolveRuntime(this, true);
+    const client = new LLM(config);
+    const usage = await client.getUsage();
+
+    if (jsonOutput) {
+      console.log(JSON.stringify(usage, null, 2));
+    } else {
+      console.log(`Spent:     ${(usage.spendUsedCents / 100).toFixed(2)} USD`);
+      console.log(`Cap:       ${(usage.spendCapCents / 100).toFixed(2)} USD`);
+      console.log(`Remaining: ${(usage.remainingCents / 100).toFixed(2)} USD`);
     }
   });
 
