@@ -1,5 +1,11 @@
 # @omnirun/cli
 
+## 0.7.0
+
+### Minor Changes
+
+- 168d0dd: Add `omni llm` command group with chat, models, and usage subcommands for the LLM proxy.
+
 ## 0.6.0
 
 ### Minor Changes
