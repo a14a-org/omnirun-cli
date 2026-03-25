@@ -691,8 +691,8 @@ sandbox
       // Fall through to history lookup
     }
 
-    // Try history
-    const hist = await Sandbox.getHistory(sandboxId, runtime.config);
+    // TODO: re-enable when SDK adds history methods (moved to gateway)
+    const hist: any = null;
     if (!hist) {
       throw new Error("sandbox not found (checked live and history)");
     }
@@ -719,11 +719,8 @@ sandbox
   .option("--offset <n>", "Offset for pagination", "0")
   .action(async function action(options: { limit: string; offset: string }) {
     const runtime = await resolveRuntime(this, true);
-    const items = await Sandbox.history({
-      ...runtime.config,
-      limit: parseInt(options.limit, 10),
-      offset: parseInt(options.offset, 10),
-    });
+    // TODO: re-enable when SDK adds history methods (moved to gateway)
+    const items: any[] = [];
 
     if (runtime.json) {
       printJson(items);
