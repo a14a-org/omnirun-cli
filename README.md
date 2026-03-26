@@ -107,6 +107,50 @@ omni beamup claude --expose 3000 -y
 omni beamup codex --expose 5173 --preview-path /app -y
 ```
 
+## LLM proxy commands
+
+Send a chat completion request (streams by default):
+
+```bash
+omni llm chat "What is 2+2?"
+```
+
+Specify a model (default is `openai/gpt-4o-mini`):
+
+```bash
+omni llm chat --model anthropic/claude-sonnet-4.6 "Hello"
+```
+
+Add a system prompt, set temperature, and disable streaming:
+
+```bash
+omni llm chat --system "You are a helpful tutor" --temperature 0.3 --no-stream "Explain recursion"
+```
+
+Set a max token limit:
+
+```bash
+omni llm chat --max-tokens 256 "Summarize quantum computing"
+```
+
+Pipe input via stdin:
+
+```bash
+echo "Translate to French: hello world" | omni llm chat
+```
+
+List available models:
+
+```bash
+omni llm models
+```
+
+Show current spend and remaining credits:
+
+```bash
+omni llm usage
+```
+
 ## Global options
 
 Use these on any command:
