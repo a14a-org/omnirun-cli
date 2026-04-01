@@ -1032,6 +1032,189 @@ command
     console.log(`killed pid=${pid} sandbox=${sandboxId}`);
   });
 
+// ── desktop commands ───────────────────────────────────────────────
+
+const desktop = program.command("desktop").description("Control desktop sandbox GUI");
+
+desktop
+  .command("screenshot")
+  .description("Take a screenshot of the desktop")
+  .argument("<sandboxId>", "Sandbox ID")
+  .option("--output <file>", "Save to file instead of stdout")
+  .action(async function action(
+    sandboxId: string,
+    options: { output?: string },
+  ) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    const imageData = await (instance as any).desktop.screenshot();
+
+    if (runtime.json) {
+      const base64 = Buffer.from(imageData).toString("base64");
+      printJson({ sandboxId, format: "png", base64 });
+      return;
+    }
+
+    if (options.output) {
+      await fs.writeFile(options.output, imageData);
+      console.log(`Screenshot saved to ${options.output}`);
+    } else {
+      process.stdout.write(Buffer.from(imageData));
+    }
+  });
+
+desktop
+  .command("click")
+  .description("Click at coordinates")
+  .argument("<sandboxId>", "Sandbox ID")
+  .argument("<x>", "X coordinate", Number.parseFloat)
+  .argument("<y>", "Y coordinate", Number.parseFloat)
+  .option("--right", "Right click")
+  .option("--double", "Double click")
+  .action(async function action(
+    sandboxId: string,
+    x: number,
+    y: number,
+    options: { right?: boolean; double?: boolean },
+  ) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+
+    const action = options.right ? "rightClick" : options.double ? "doubleClick" : "click";
+    await (instance as any).desktop.mouse({ action, x, y });
+
+    if (runtime.json) {
+      printJson({ sandboxId, action, x, y });
+      return;
+    }
+
+    console.log(`Clicked at (${x}, ${y})`);
+  });
+
+desktop
+  .command("type")
+  .description("Type text on the desktop")
+  .argument("<sandboxId>", "Sandbox ID")
+  .argument("<text>", "Text to type")
+  .action(async function action(sandboxId: string, text: string) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    await (instance as any).desktop.keyboard({ action: "type", text });
+
+    if (runtime.json) {
+      printJson({ sandboxId, action: "type", text });
+      return;
+    }
+
+    console.log(`Typed: ${text}`);
+  });
+
+desktop
+  .command("press")
+  .description("Press a key or key combination")
+  .argument("<sandboxId>", "Sandbox ID")
+  .argument("<key>", "Key to press (e.g. Return, ctrl+a, alt+Tab)")
+  .action(async function action(sandboxId: string, key: string) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    await (instance as any).desktop.keyboard({ action: "press", key });
+
+    if (runtime.json) {
+      printJson({ sandboxId, action: "press", key });
+      return;
+    }
+
+    console.log(`Pressed: ${key}`);
+  });
+
+desktop
+  .command("move")
+  .description("Move mouse to coordinates")
+  .argument("<sandboxId>", "Sandbox ID")
+  .argument("<x>", "X coordinate", Number.parseFloat)
+  .argument("<y>", "Y coordinate", Number.parseFloat)
+  .action(async function action(sandboxId: string, x: number, y: number) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    await (instance as any).desktop.mouse({ action: "move", x, y });
+
+    if (runtime.json) {
+      printJson({ sandboxId, action: "move", x, y });
+      return;
+    }
+
+    console.log(`Moved to (${x}, ${y})`);
+  });
+
+desktop
+  .command("scroll")
+  .description("Scroll the desktop")
+  .argument("<sandboxId>", "Sandbox ID")
+  .argument("<direction>", "Direction: up, down, left, right")
+  .option("--amount <n>", "Number of scroll clicks", "3")
+  .action(async function action(
+    sandboxId: string,
+    direction: string,
+    options: { amount: string },
+  ) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    const amount = parseInteger(options.amount, "amount");
+    await (instance as any).desktop.mouse({ action: "scroll", direction, amount });
+
+    if (runtime.json) {
+      printJson({ sandboxId, action: "scroll", direction, amount });
+      return;
+    }
+
+    console.log(`Scrolled ${direction} (${amount} clicks)`);
+  });
+
+desktop
+  .command("screen")
+  .description("Get desktop screen info")
+  .argument("<sandboxId>", "Sandbox ID")
+  .action(async function action(sandboxId: string) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    const screen = await (instance as any).desktop.getScreen();
+
+    if (runtime.json) {
+      printJson(screen);
+      return;
+    }
+
+    console.log(`Resolution: ${screen.width}x${screen.height}`);
+    console.log(`Cursor: (${screen.cursorX}, ${screen.cursorY})`);
+  });
+
+desktop
+  .command("open")
+  .description("Open desktop stream in browser")
+  .argument("<sandboxId>", "Sandbox ID")
+  .action(async function action(sandboxId: string) {
+    const runtime = await resolveRuntime(this, true);
+    const instance = await Sandbox.connect(sandboxId, runtime.config);
+    const api = getExposureApi(instance);
+
+    // Create exposure for the noVNC port
+    let exposure = await api.create(6080, { visibility: "public" });
+    exposure = await waitForExposureReady(api, exposure, 30);
+
+    const url = exposure.accessUrl ?? exposure.url;
+
+    if (runtime.json) {
+      printJson({ sandboxId, url, exposureId: exposure.id });
+      return;
+    }
+
+    console.log(`Desktop URL: ${url}`);
+    const opened = await openInBrowser(url);
+    if (!opened) {
+      console.warn("Warning: Failed to open URL in browser.");
+    }
+  });
+
 // ── beamup helpers ──────────────────────────────────────────────────
 
 async function discoverClaudeCredentials(authDir: string): Promise<string | null> {
@@ -1975,6 +2158,110 @@ beamup
       console.log("OpenClaw gateway started in background.");
       console.log(`Gateway URL: ${gatewayUrl}`);
       console.log(`Reconnect: omni sandbox info ${instance.sandboxId}`);
+    }
+  });
+
+// ── beamup desktop ─────────────────────────────────────────────────
+
+addPreviewOptions(
+beamup
+  .command("desktop")
+  .description("Launch a desktop GUI sandbox")
+  .option("--template <id>", "Sandbox template ID", "desktop")
+  .option("--no-internet", "Disable internet access")
+  .option("--timeout <seconds>", "Sandbox timeout in seconds")
+  .option("--permanent", "Don't auto-expire the sandbox (timeout=0)")
+  .option("--e2ee", "Enable E2EE")
+  .option("--resolution <WxH>", "Screen resolution", "1024x768")
+  .option("--env <key=value>", "Extra environment variable", collect, [])
+  .option("--open", "Open desktop in browser automatically")
+  .option("-y, --yes", "Skip interactive prompts")
+).action(async function action(options: {
+    template: string;
+    internet?: boolean;
+    timeout?: string;
+    permanent?: boolean;
+    e2ee?: boolean;
+    resolution: string;
+    env?: string[];
+    open?: boolean;
+    expose?: string[];
+    previewTtl?: string;
+    previewPath?: string;
+    privatePreview?: boolean;
+    rewritePreviewHost?: boolean;
+    yes?: boolean;
+  }) {
+    const runtime = await resolveRuntime(this, true);
+    const envVars = parseKeyValueList(options.env, "env") ?? {};
+
+    const useDefaults = Boolean(options.yes) || !process.stdin.isTTY;
+    const internet = options.internet != null
+      ? options.internet
+      : useDefaults || await promptConfirm("Enable full internet access?", true);
+    const timeout = options.timeout != null
+      ? parseInteger(options.timeout, "timeout")
+      : options.permanent
+        ? 0
+        : useDefaults
+          ? 3600
+          : parseInteger(await promptInput("Sandbox timeout in seconds:", "3600"), "timeout");
+    const e2ee = Boolean(options.e2ee);
+
+    // Pass resolution as env var for the desktop template
+    envVars.RESOLUTION = options.resolution;
+
+    console.log("Creating desktop sandbox...");
+    const instance = await Sandbox.create(options.template, {
+      apiUrl: runtime.config.apiUrl,
+      apiKey: runtime.config.apiKey,
+      requestTimeout: runtime.config.requestTimeout,
+      e2ee,
+      internet,
+      timeout,
+      envVars,
+    });
+    console.log(`sandbox_id=${instance.sandboxId}`);
+
+    // Wait for desktop to be ready
+    let desktopReady = false;
+    for (let i = 0; i < 30; i++) {
+      try {
+        await (instance as any).desktop.getScreen();
+        desktopReady = true;
+        break;
+      } catch {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+    if (!desktopReady) {
+      console.warn("Warning: Desktop services may not be fully started yet.");
+    }
+
+    // Create exposure for noVNC port
+    const api = getExposureApi(instance);
+    let exposure = await api.create(6080, { visibility: "public" });
+    exposure = await waitForExposureReady(api, exposure, 30);
+
+    const desktopUrl = exposure.accessUrl ?? exposure.url;
+    console.log(`desktop_url=${desktopUrl}`);
+
+    await maybeCreateBeamupPreviews(instance, options);
+
+    if (options.open) {
+      const opened = await openInBrowser(desktopUrl);
+      if (!opened) {
+        console.warn("Warning: Failed to open desktop URL in browser.");
+      }
+    }
+
+    if (process.stdin.isTTY) {
+      console.log("\nDesktop is running. You can access it at the URL above.");
+      console.log("Attaching terminal session...\n");
+      await attachPty(instance, "bash");
+    } else {
+      console.log("Desktop sandbox started.");
+      console.log(`Connect to sandbox: omni sandbox info ${instance.sandboxId}`);
     }
   });
 

@@ -62,6 +62,26 @@ function makeSdk(state) {
           uptime: "2026-03-06T12:00:00Z",
         }),
       };
+      this.desktop = {
+        screenshot: async () => {
+          state.desktopActions.push({ action: "screenshot" });
+          return new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // PNG magic bytes
+        },
+        mouse: async (opts) => {
+          state.desktopActions.push({ action: "mouse", ...opts });
+        },
+        keyboard: async (opts) => {
+          state.desktopActions.push({ action: "keyboard", ...opts });
+        },
+        getScreen: async () => {
+          state.desktopActions.push({ action: "getScreen" });
+          return { width: 1024, height: 768, cursorX: 512, cursorY: 384 };
+        },
+        getStreamInfo: async () => {
+          state.desktopActions.push({ action: "getStreamInfo" });
+          return { novncPort: 6080, vncPort: 5900, wsPath: "/websockify" };
+        },
+      };
       this.exposures = {
         create: async (port, options = {}) => {
           const exposure = {
@@ -157,6 +177,7 @@ function makeState() {
     fileLists: [],
     fileRemovals: [],
     dirCreates: [],
+    desktopActions: [],
     ptyCreates: [],
     commandKills: [],
     networkPolicies: [],
@@ -462,6 +483,130 @@ await runCase("beamup openclaw -y without local state writes no config (non-TTY)
     if (origEnv === undefined) delete process.env.OPENCLAW_STATE_DIR;
     else process.env.OPENCLAW_STATE_DIR = origEnv;
   }
+});
+
+// ── desktop commands ──
+
+await runCase("desktop screenshot connects and captures image", async () => {
+  const state = makeState();
+  const result = await runCli(["desktop", "screenshot", "sbx-1", "--output", "/tmp/test-shot.png"], state);
+  assert.equal(state.connects[0], "sbx-1");
+  assert.equal(state.desktopActions[0].action, "screenshot");
+  assert.match(result.logs, /Screenshot saved/);
+});
+
+await runCase("desktop click sends click action with coordinates", async () => {
+  const state = makeState();
+  const result = await runCli(["desktop", "click", "sbx-1", "100", "200"], state);
+  assert.equal(state.connects[0], "sbx-1");
+  assert.deepEqual(state.desktopActions[0], { action: "mouse", action: "click", x: 100, y: 200 });
+  assert.match(result.logs, /Clicked at \(100, 200\)/);
+});
+
+await runCase("desktop click --right sends rightClick action", async () => {
+  const state = makeState();
+  const result = await runCli(["desktop", "click", "sbx-1", "50", "75", "--right"], state);
+  assert.deepEqual(state.desktopActions[0], { action: "mouse", action: "rightClick", x: 50, y: 75 });
+});
+
+await runCase("desktop click --double sends doubleClick action", async () => {
+  const state = makeState();
+  await runCli(["desktop", "click", "sbx-1", "300", "400", "--double"], state);
+  assert.deepEqual(state.desktopActions[0], { action: "mouse", action: "doubleClick", x: 300, y: 400 });
+});
+
+await runCase("desktop type sends keyboard type action", async () => {
+  const state = makeState();
+  const result = await runCli(["desktop", "type", "sbx-1", "hello world"], state);
+  assert.equal(state.connects[0], "sbx-1");
+  assert.deepEqual(state.desktopActions[0], { action: "keyboard", action: "type", text: "hello world" });
+  assert.match(result.logs, /Typed: hello world/);
+});
+
+await runCase("desktop press sends keyboard press action", async () => {
+  const state = makeState();
+  const result = await runCli(["desktop", "press", "sbx-1", "Return"], state);
+  assert.deepEqual(state.desktopActions[0], { action: "keyboard", action: "press", key: "Return" });
+  assert.match(result.logs, /Pressed: Return/);
+});
+
+await runCase("desktop move sends mouse move action", async () => {
+  const state = makeState();
+  const result = await runCli(["desktop", "move", "sbx-1", "500", "600"], state);
+  assert.deepEqual(state.desktopActions[0], { action: "mouse", action: "move", x: 500, y: 600 });
+  assert.match(result.logs, /Moved to \(500, 600\)/);
+});
+
+await runCase("desktop scroll sends scroll action with direction", async () => {
+  const state = makeState();
+  const result = await runCli(["desktop", "scroll", "sbx-1", "down", "--amount", "5"], state);
+  assert.deepEqual(state.desktopActions[0], { action: "mouse", action: "scroll", direction: "down", amount: 5 });
+  assert.match(result.logs, /Scrolled down \(5 clicks\)/);
+});
+
+await runCase("desktop screen returns resolution and cursor info", async () => {
+  const state = makeState();
+  const result = await runCli(["desktop", "screen", "sbx-1"], state);
+  assert.equal(state.desktopActions[0].action, "getScreen");
+  assert.match(result.logs, /Resolution: 1024x768/);
+  assert.match(result.logs, /Cursor: \(512, 384\)/);
+});
+
+await runCase("desktop screen --json returns JSON output", async () => {
+  const state = makeState();
+  const result = await runCli(["--json", "desktop", "screen", "sbx-1"], state);
+  const parsed = JSON.parse(result.logs);
+  assert.equal(parsed.width, 1024);
+  assert.equal(parsed.height, 768);
+  assert.equal(parsed.cursorX, 512);
+  assert.equal(parsed.cursorY, 384);
+});
+
+await runCase("desktop click --json returns JSON output", async () => {
+  const state = makeState();
+  const result = await runCli(["--json", "desktop", "click", "sbx-1", "100", "200"], state);
+  const parsed = JSON.parse(result.logs);
+  assert.equal(parsed.action, "click");
+  assert.equal(parsed.x, 100);
+  assert.equal(parsed.y, 200);
+});
+
+// ── beamup desktop ──
+
+await runCase("beamup desktop -y creates sandbox with desktop template", async () => {
+  const state = makeState();
+  const result = await runCli(["beamup", "desktop", "-y"], state);
+  assert.equal(state.creates.length, 1);
+  assert.equal(state.creates[0].template, "desktop");
+  assert.equal(state.creates[0].options.timeout, 3600);
+  assert.match(result.logs, /sandbox_id=/);
+});
+
+await runCase("beamup desktop --permanent -y passes timeout=0", async () => {
+  const state = makeState();
+  await runCli(["beamup", "desktop", "--permanent", "-y"], state);
+  assert.equal(state.creates[0].options.timeout, 0);
+});
+
+await runCase("beamup desktop --timeout 600 -y passes timeout=600", async () => {
+  const state = makeState();
+  await runCli(["beamup", "desktop", "--timeout", "600", "-y"], state);
+  assert.equal(state.creates[0].options.timeout, 600);
+});
+
+await runCase("beamup desktop -y creates noVNC exposure on port 6080", async () => {
+  const state = makeState();
+  const result = await runCli(["beamup", "desktop", "-y"], state);
+  // Should create at least one exposure for noVNC
+  const novncExposure = state.previewCreates.find(p => p.port === 6080);
+  assert.ok(novncExposure, "Expected a preview on port 6080 for noVNC");
+  assert.match(result.logs, /desktop_url=/);
+});
+
+await runCase("beamup desktop -y passes resolution as env var", async () => {
+  const state = makeState();
+  await runCli(["beamup", "desktop", "-y", "--resolution", "1920x1080"], state);
+  assert.equal(state.creates[0].options.envVars.RESOLUTION, "1920x1080");
 });
 
 console.log("\nAll tests passed!");
