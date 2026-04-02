@@ -313,6 +313,16 @@ async function copyToClipboard(value: string): Promise<boolean> {
 async function openInBrowser(targetUrl: string): Promise<boolean> {
   if (!targetUrl) return false;
 
+  const scheme = targetUrl.toLowerCase();
+  if (
+    scheme.startsWith("javascript:") ||
+    scheme.startsWith("file:") ||
+    scheme.startsWith("data:") ||
+    scheme.startsWith("vbscript:")
+  ) {
+    return false;
+  }
+
   const launch = (command: string, args: string[]): Promise<boolean> =>
     new Promise((resolve) => {
       const child = spawn(command, args, {
