@@ -34,9 +34,14 @@ const DEFAULT_PREVIEW_DOMAIN = "omnirun-preview.dev";
 
 // Resolve the domain used to build sandbox preview/gateway URLs. Reads
 // OMNIRUN_PREVIEW_DOMAIN (set via env or loaded from the .env file by
-// resolveRuntime) and falls back to the OmniRun preview domain. Passing this
-// into Sandbox.create ensures getHost()/exposure URLs never fall back to the
-// SDK's legacy claudebox.io default.
+// resolveRuntime) and falls back to the OmniRun preview domain.
+//
+// This is load-bearing for the OpenClaw beamup path: it prints the gateway URL
+// via instance.getHost(4767), which the SDK builds client-side from
+// previewDomain and would otherwise fall back to the legacy claudebox.io
+// default. Passing it into the other beamup Sandbox.create calls is defensive
+// future-proofing only — those flows surface server-built exposure URLs (from
+// exposures.create), so their hostnames come from the server regardless.
 function resolvePreviewDomain(): string {
   const fromEnv = process.env[ENV_PREVIEW_DOMAIN]?.trim();
   return fromEnv ? fromEnv : DEFAULT_PREVIEW_DOMAIN;
