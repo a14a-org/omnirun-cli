@@ -29,6 +29,23 @@ const DEFAULT_API_URL = "https://api.omnirun.io";
 const DEFAULT_ENV_FILE = ".env";
 const ENV_API_URL = "OMNIRUN_API_URL";
 const ENV_API_KEY = "OMNIRUN_API_KEY";
+const ENV_PREVIEW_DOMAIN = "OMNIRUN_PREVIEW_DOMAIN";
+const DEFAULT_PREVIEW_DOMAIN = "omnirun-preview.dev";
+
+// Resolve the domain used to build sandbox preview/gateway URLs. Reads
+// OMNIRUN_PREVIEW_DOMAIN (set via env or loaded from the .env file by
+// resolveRuntime) and falls back to the OmniRun preview domain.
+//
+// This is load-bearing for the OpenClaw beamup path: it prints the gateway URL
+// via instance.getHost(4767), which the SDK builds client-side from
+// previewDomain and would otherwise fall back to the legacy claudebox.io
+// default. Passing it into the other beamup Sandbox.create calls is defensive
+// future-proofing only — those flows surface server-built exposure URLs (from
+// exposures.create), so their hostnames come from the server regardless.
+function resolvePreviewDomain(): string {
+  const fromEnv = process.env[ENV_PREVIEW_DOMAIN]?.trim();
+  return fromEnv ? fromEnv : DEFAULT_PREVIEW_DOMAIN;
+}
 
 type CLIOptions = {
   apiUrl?: string;
@@ -1740,6 +1757,7 @@ beamup
       internet: config.internet,
       timeout: config.timeout,
       envVars: config.envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
@@ -1766,8 +1784,16 @@ beamup
       await instance.commands.run(`chmod -R 700 ${configDir}`);
       await instance.commands.run(`chown -R ${sandboxUser}:${sandboxUser} ${configDir}`);
       if (credentials) {
-        const verify = await instance.commands.run(`cat ${configDir}/.credentials.json | head -c 60`);
-        console.log(`  credentials written: ${verify.stdout.trim().slice(0, 50)}...`);
+        // Verify the credentials file exists without printing any of its
+        // contents (it holds real OAuth credential material).
+        const verify = await instance.commands.run(
+          `test -s ${configDir}/.credentials.json && echo ok || echo missing`
+        );
+        if (verify.stdout.trim() === "ok") {
+          console.log("  credentials written.");
+        } else {
+          console.warn("Warning: credentials file was not written.");
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1867,6 +1893,7 @@ beamup
       internet,
       timeout,
       envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
@@ -1975,6 +2002,7 @@ beamup
       internet,
       timeout,
       envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
@@ -2124,6 +2152,7 @@ beamup
       internet,
       timeout,
       envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
@@ -2230,6 +2259,7 @@ beamup
       internet,
       timeout,
       envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 

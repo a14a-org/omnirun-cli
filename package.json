@@ -16,6 +16,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "dev": "node --enable-source-maps src/cli.ts",
+    "test": "npm run build && node tests/cli.test.mjs",
     "pack:smoke": "npm pack --dry-run",
     "changeset": "changeset",
     "version-packages": "changeset version",

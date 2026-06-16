@@ -6,19 +6,26 @@ Primary command: `omni`
 
 Compatibility alias: `omnirun`
 
-## Install (local dev)
+## Install
 
 ```bash
-cd /Users/dafmulder/Documents/code/omnirun-cli
-npm install
-npm run build
-npm link
+npm install -g @omnirun/cli
 ```
 
 Then run:
 
 ```bash
 omni --help
+```
+
+### From source (local dev)
+
+Clone the repo, then from the project root:
+
+```bash
+npm install
+npm run build
+npm link
 ```
 
 ## Auth bootstrap
@@ -118,8 +125,11 @@ omni llm chat "What is 2+2?"
 Specify a model (default is `openai/gpt-4o-mini`):
 
 ```bash
-omni llm chat --model anthropic/claude-sonnet-4.6 "Hello"
+omni llm chat --model openai/gpt-4o-mini "Hello"
 ```
+
+Other providers use the same `provider/model` form, e.g. `anthropic/claude-sonnet-4-6`.
+Run `omni llm models` to see the live list of available model ids.
 
 Add a system prompt, set temperature, and disable streaming:
 
