@@ -29,6 +29,18 @@ const DEFAULT_API_URL = "https://api.omnirun.io";
 const DEFAULT_ENV_FILE = ".env";
 const ENV_API_URL = "OMNIRUN_API_URL";
 const ENV_API_KEY = "OMNIRUN_API_KEY";
+const ENV_PREVIEW_DOMAIN = "OMNIRUN_PREVIEW_DOMAIN";
+const DEFAULT_PREVIEW_DOMAIN = "omnirun-preview.dev";
+
+// Resolve the domain used to build sandbox preview/gateway URLs. Reads
+// OMNIRUN_PREVIEW_DOMAIN (set via env or loaded from the .env file by
+// resolveRuntime) and falls back to the OmniRun preview domain. Passing this
+// into Sandbox.create ensures getHost()/exposure URLs never fall back to the
+// SDK's legacy claudebox.io default.
+function resolvePreviewDomain(): string {
+  const fromEnv = process.env[ENV_PREVIEW_DOMAIN]?.trim();
+  return fromEnv ? fromEnv : DEFAULT_PREVIEW_DOMAIN;
+}
 
 type CLIOptions = {
   apiUrl?: string;
@@ -1740,6 +1752,7 @@ beamup
       internet: config.internet,
       timeout: config.timeout,
       envVars: config.envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
@@ -1875,6 +1888,7 @@ beamup
       internet,
       timeout,
       envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
@@ -1983,6 +1997,7 @@ beamup
       internet,
       timeout,
       envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
@@ -2132,6 +2147,7 @@ beamup
       internet,
       timeout,
       envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
@@ -2238,6 +2254,7 @@ beamup
       internet,
       timeout,
       envVars,
+      previewDomain: resolvePreviewDomain(),
     });
     console.log(`sandbox_id=${instance.sandboxId}`);
 
