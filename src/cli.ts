@@ -1766,8 +1766,16 @@ beamup
       await instance.commands.run(`chmod -R 700 ${configDir}`);
       await instance.commands.run(`chown -R ${sandboxUser}:${sandboxUser} ${configDir}`);
       if (credentials) {
-        const verify = await instance.commands.run(`cat ${configDir}/.credentials.json | head -c 60`);
-        console.log(`  credentials written: ${verify.stdout.trim().slice(0, 50)}...`);
+        // Verify the credentials file exists without printing any of its
+        // contents (it holds real OAuth credential material).
+        const verify = await instance.commands.run(
+          `test -s ${configDir}/.credentials.json && echo ok || echo missing`
+        );
+        if (verify.stdout.trim() === "ok") {
+          console.log("  credentials written.");
+        } else {
+          console.warn("Warning: credentials file was not written.");
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
