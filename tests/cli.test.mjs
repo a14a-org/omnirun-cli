@@ -7,8 +7,11 @@ class FakeCommandExitException extends Error {}
 
 function makeSdk(state) {
   class FakeSandboxConnection {
-    constructor(sandboxId) {
+    constructor(sandboxId, previewDomain) {
       this.sandboxId = sandboxId;
+      // Mirror the SDK: getHost() builds URLs from the previewDomain passed to
+      // Sandbox.create, falling back to the legacy default when none is given.
+      this.previewDomain = previewDomain ?? "claudebox.io";
       this.trafficAccessToken = "";
       this.e2ee = null;
       this.commands = {
@@ -126,7 +129,7 @@ function makeSdk(state) {
     }
 
     getHost(port) {
-      return `https://${this.sandboxId}-${port}.claudebox.io`;
+      return `https://${this.sandboxId}-${port}.${this.previewDomain}`;
     }
 
     async getInfo() {
@@ -148,7 +151,7 @@ function makeSdk(state) {
   class FakeSandbox {
     static async create(template, options) {
       state.creates.push({ template, options });
-      return new FakeSandboxConnection("sbx-created");
+      return new FakeSandboxConnection("sbx-created", options?.previewDomain);
     }
 
     static async connect(sandboxId) {
@@ -466,6 +469,19 @@ await runCase("beamup openclaw -y in non-TTY prints gateway URL and sandbox ID",
   const result = await runCli(["beamup", "openclaw", "-y"], state);
   assert.match(result.logs, /sandbox_id=/);
   assert.match(result.logs, /Gateway URL:/i);
+});
+
+await runCase("beamup openclaw -y passes omnirun preview domain and prints gateway URL on it", async () => {
+  // Security fix: getHost() must resolve against the OmniRun preview domain,
+  // not the SDK's legacy claudebox.io fallback. Assert both the recorded
+  // create options and the printed gateway URL (which the fake getHost builds
+  // from the passed previewDomain).
+  const state = makeState();
+  const result = await runCli(["beamup", "openclaw", "-y"], state);
+  assert.equal(state.creates.length, 1);
+  assert.equal(state.creates[0].options.previewDomain, "omnirun-preview.dev");
+  assert.match(result.logs, /Gateway URL: https:\/\/sbx-created-4767\.omnirun-preview\.dev/);
+  assert.ok(!result.logs.includes("claudebox.io"));
 });
 
 // ── openclaw fresh setup (non-interactive path) ──
