@@ -23,7 +23,7 @@
     "release": "changeset publish"
   },
   "engines": {
-    "node": ">=18.20.8"
+    "node": ">=24.18.0"
   },
   "license": "MIT",
   "publishConfig": {
