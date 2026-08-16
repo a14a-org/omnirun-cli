@@ -30,7 +30,7 @@ jobs:
           npm run build
 
       - name: Version or Publish
-        uses: changesets/action@v2.0.0
+        uses: changesets/action@v2.1.0
         with:
           version: npm run version-packages
           publish: npm run release
