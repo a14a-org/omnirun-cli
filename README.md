@@ -176,6 +176,21 @@ Environment variables are also supported:
 - `OMNIRUN_API_URL`
 - `OMNIRUN_API_KEY`
 
+## Self-hosting
+
+The OmniRun server is open source (Apache-2.0) at [github.com/a14a-org/omnirun](https://github.com/a14a-org/omnirun). To use the CLI
+against your own deployment, pass `--api-url` or set `OMNIRUN_API_URL`
+(directly or in the `.env` file the CLI reads):
+
+```bash
+omni auth init --api-url https://omnirun.example.internal --api-key <your_key>
+# or
+export OMNIRUN_API_URL=https://omnirun.example.internal
+export OMNIRUN_API_KEY=omr_...
+# Only if your deployment serves previews on its own domain:
+export OMNIRUN_PREVIEW_DOMAIN=preview.example.internal
+```
+
 ## Release automation
 
 This repo is configured for Changesets-based npm publishing.
@@ -193,3 +208,11 @@ Release flow:
 2. Push to `main`.
 3. Changesets action opens/updates a release PR with version bumps/changelog.
 4. Merge that PR to publish automatically to npm.
+
+## License
+
+[Apache License 2.0](./LICENSE). See [NOTICE](./NOTICE). Contributions require a DCO
+sign-off; see [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+Versions published before the relicense remain available under their original
+MIT license.
