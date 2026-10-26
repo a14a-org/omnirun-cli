@@ -32,10 +32,10 @@ jobs:
       - name: Version or Publish
         uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          version: npm run version-packages
-          publish: npm run release
-          title: "chore: release @omnirun/cli"
-          commit: "chore: release @omnirun/cli"
+          version-script: npm run version-packages
+          publish-script: npm run release
+          pr-title: "chore: release @omnirun/cli"
+          commit-message: "chore: release @omnirun/cli"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
